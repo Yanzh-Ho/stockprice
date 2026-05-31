@@ -1,238 +1,363 @@
 'use strict';
 require('dotenv').config();
 
-const http  = require('http');
-const https = require('https');
+const http = require('http');
 const { WebSocketServer } = require('ws');
 
-const PORT       = process.env.PORT || 8080;
+// yahoo-finance2 v3: requires instantiation
+const YahooFinance = require('yahoo-finance2').default;
+const yahooFinance = new YahooFinance({
+  suppressNotices: ['yahooSurvey', 'ripHistorical'],
+  validation: { logErrors: false, logOptionsErrors: false },
+});
+
+// groq-sdk
+const Groq = require('groq-sdk');
+
+const PORT       = process.env.PORT        || 8080;
 const GROQ_KEY   = process.env.GROQ_API_KEY;
-const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
+const GROQ_MODEL = process.env.GROQ_MODEL  || 'llama-3.3-70b-versatile';
 
-// ── Mock stock data (Phase 0: no yfinance yet) ────────────────────────────────
-// Future: replace each entry with a live yfinance fetch inside requestAnalysis
+// Init Groq client (null when no key → mock mode)
+const groq = GROQ_KEY ? new Groq({ apiKey: GROQ_KEY }) : null;
 
-const MOCK_STOCKS = {
-  '2330': { symbol:'2330', name:'台積電',   market:'TW', sym:'NT$', price:875,    change:18.00,  pct:2.10,  verdict:'BUY',  conf:84, pe:'27.4倍', cap:'22.7 兆元',  div:'2.10%' },
-  '2454': { symbol:'2454', name:'聯發科',   market:'TW', sym:'NT$', price:1180,   change:32.00,  pct:2.79,  verdict:'BUY',  conf:76, pe:'19.8倍', cap:'1.89 兆元',  div:'3.50%' },
-  '2317': { symbol:'2317', name:'鴻海',     market:'TW', sym:'NT$', price:182,    change:-2.50,  pct:-1.35, verdict:'HOLD', conf:63, pe:'11.2倍', cap:'2.53 兆元',  div:'4.30%' },
-  '2412': { symbol:'2412', name:'中華電',   market:'TW', sym:'NT$', price:121,    change:0.50,   pct:0.41,  verdict:'HOLD', conf:60, pe:'25.3倍', cap:'9,420 億元', div:'4.85%' },
-  '2882': { symbol:'2882', name:'國泰金',   market:'TW', sym:'NT$', price:62,     change:0.80,   pct:1.31,  verdict:'HOLD', conf:58, pe:'14.5倍', cap:'1.02 兆元',  div:'4.20%' },
-  'TSM':  { symbol:'TSM',  name:'台積電ADR',market:'US', sym:'$',   price:185.40, change:4.18,   pct:2.31,  verdict:'BUY',  conf:78, pe:'24.8倍', cap:'9,583億美元',div:'1.85%' },
-  'TSLA': { symbol:'TSLA', name:'特斯拉',   market:'US', sym:'$',   price:248.70, change:-3.05,  pct:-1.21, verdict:'HOLD', conf:62, pe:'62.4倍', cap:'7,934億美元',div:'—'     },
-  'NVDA': { symbol:'NVDA', name:'輝達',     market:'US', sym:'$',   price:920.50, change:33.88,  pct:3.82,  verdict:'BUY',  conf:85, pe:'68.2倍', cap:'2.27兆美元', div:'0.04%' },
-  'AAPL': { symbol:'AAPL', name:'蘋果',     market:'US', sym:'$',   price:195.30, change:0.97,   pct:0.50,  verdict:'HOLD', conf:71, pe:'32.1倍', cap:'3.01兆美元', div:'0.52%' },
-  'MSFT': { symbol:'MSFT', name:'微軟',     market:'US', sym:'$',   price:412.80, change:6.21,   pct:1.53,  verdict:'BUY',  conf:80, pe:'35.8倍', cap:'3.07兆美元', div:'0.74%' },
-};
+// ── Symbol helpers ────────────────────────────────────────────────────────────
 
-// ── Mock AI fallback (used when GROQ_API_KEY is absent) ───────────────────────
+// "2330" → "2330.TW"  |  "AAPL" → "AAPL"  |  "2330.TW" → "2330.TW"
+function toYahooSymbol(raw) {
+  const s = raw.trim().toUpperCase();
+  if (/^\d{4}$/.test(s))         return `${s}.TW`;
+  if (/^\d{4,6}\.(TW|TWO)$/.test(s)) return s;
+  return s;
+}
 
-const MOCK_AI_TEXT = {
-  '2330': '**台積電（2330）— 買進 · 信心指數 84%**\n\n台積電掌控全球超過 60% 的先進晶圓代工產能，是 AI 晶片供應鏈的核心骨幹。外資持續買超，3 奈米製程放量帶動 EPS 上修；2 奈米製程 2025 年底試產，有望推動下一波估值擴張。\n\n**目標價：** NT$970（較現價上漲 10.9%）\n**主要風險：** 台灣海峽地緣政治局勢\n\n建議作為台股核心持股，長期持有。',
-  '2454': '**聯發科（2454）— 買進 · 信心指數 76%**\n\n天璣 9400 成功打入三星旗艦機，AI 手機晶片市佔率快速提升。現金殖利率達 3.5%，估值相對輝達等美股 AI 股票合理。\n\n**目標價：** NT$1,320（較現價上漲 11.9%）\n**主要風險：** 中國客戶佔比偏高（約 55%）',
-  '2317': '**鴻海（2317）— 持有 · 信心指數 63%**\n\n殖利率超過 4% 支撐股價下檔，電動車（MIH 平台）新業務仍在燒錢階段，短期難以顯著貢獻獲利。\n\n**目標價：** NT$200（較現價上漲 9.9%）\n**建議：** 等待電動車業務明確轉虧為盈訊號，或回測 NT$165 以下再加碼。',
-  '2412': '**中華電（2412）— 持有 · 信心指數 60%**\n\n股息穩定，殖利率近 5%，是台股「存股」首選之一。但 5G 投資回收期漫長，成長性有限。\n\n**目標價：** NT$128（較現價上漲 5.8%）\n**適合：** 低風險、重視現金流的長期投資人',
-  '2882': '**國泰金（2882）— 持有 · 信心指數 58%**\n\n台灣最大金控，對利率與台幣匯率高度敏感。Fed 降息周期若確立，壽險資產評價有望改善。殖利率約 4.2%。\n\n**目標價：** NT$68（較現價上漲 9.7%）\n**主要風險：** 台幣升值壓縮海外投資收益',
-  'TSM':  '**台積電 ADR（TSM）— 買進 · 信心指數 78%**\n\nAI 晶片供應鏈核心，輝達與蘋果訂單能見度延伸至 2026 年。3 奈米製程放量推動均售價上升。\n\n**目標價：** $205（較現價上漲 10.6%）\n**主要風險：** 台灣海峽地緣政治局勢',
-  'TSLA': '**特斯拉（TSLA）— 持有 · 信心指數 62%**\n\n比亞迪競爭加劇、毛利縮減，62 倍本益比已充分反映 Robotaxi 與 Optimus 的潛力溢價。\n\n**目標價：** $255（較現價上漲 2.5%）\n**建議：** 等待 $200–$220 的更佳進場點，或等待 FSD 明確催化劑。',
-  'NVDA': '**輝達（NVDA）— 強力買進 · 信心指數 85%**\n\nBlackwell（B200）量產啟動，資料中心營收年增逾 400%。CUDA 生態系形成極高轉換成本壁壘，AMD 至今無法突破。\n\n**目標價：** $1,050（較現價上漲 14%）\n**注意：** 68 倍本益比容錯空間有限，請依風險承受度控制倉位。',
-  'AAPL': '**蘋果（AAPL）— 持有 · 信心指數 71%**\n\n服務業務年化規模約 1,000 億美元，獲利高度可預測。Apple Intelligence 有望在 2025 年下半年催化下一波 iPhone 換機潮。\n\n**目標價：** $220（較現價上漲 12.6%）\n**主要風險：** 中國市場營收敞口（約佔總營收 18%）',
-  'MSFT': '**微軟（MSFT）— 買進 · 信心指數 80%**\n\nAzure 再加速成長至 29%，Copilot 席次滲透率持續提升。企業分發護城河（Office、Azure、Teams）無可匹敵。\n\n**目標價：** $480（較現價上漲 16%）\n**催化劑：** Azure OpenAI 滲透與 Copilot 席次擴張',
-};
+function isTW(sym) { return /\.(TW|TWO)$/i.test(sym); }
 
-// ── Utility: safe send ────────────────────────────────────────────────────────
+// ── Number formatters ─────────────────────────────────────────────────────────
 
-function safeSend(ws, obj) {
-  if (ws.readyState === ws.OPEN) {
-    ws.send(JSON.stringify(obj));
+function fmtCap(n, tw) {
+  if (!n) return '—';
+  if (tw) {
+    if (n >= 1e12) return `${(n / 1e12).toFixed(1)} 兆元`;
+    if (n >= 1e8)  return `${Math.round(n / 1e8).toLocaleString()} 億元`;
+    return `${Math.round(n / 1e6).toLocaleString()} 百萬元`;
+  }
+  if (n >= 1e12) return `$${(n / 1e12).toFixed(2)}T`;
+  if (n >= 1e9)  return `$${(n / 1e9).toFixed(1)}B`;
+  return `$${(n / 1e6).toFixed(0)}M`;
+}
+
+function fmtVol(n, tw) {
+  if (!n) return '—';
+  if (tw) {
+    const lots = n / 1000;
+    return lots >= 10000
+      ? `${(lots / 10000).toFixed(1)}萬張`
+      : `${Math.round(lots).toLocaleString()}張`;
+  }
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(0)}K`;
+  return String(n);
+}
+
+function r2(n) { return n != null ? +n.toFixed(2) : 0; }
+
+// ── Yahoo Finance – quote ─────────────────────────────────────────────────────
+
+async function fetchQuote(yahooSym) {
+  const q = await yahooFinance.quote(yahooSym, {}, { validateResult: false });
+  if (!q || !q.regularMarketPrice) {
+    throw new Error(`找不到「${yahooSym}」的報價，請確認股票代號。`);
+  }
+  return q;
+}
+
+// ── Yahoo Finance – 1-year daily K-line ───────────────────────────────────────
+
+async function fetchHistory(yahooSym) {
+  try {
+    const end   = new Date();
+    const start = new Date(end);
+    start.setFullYear(start.getFullYear() - 1);
+
+    const rows = await yahooFinance.historical(
+      yahooSym,
+      { period1: start, period2: end, interval: '1d' },
+      { validateResult: false }
+    );
+
+    return (rows ?? [])
+      .filter(r => r.close != null)
+      .map(r => ({
+        o: r2(r.open  ?? r.close),
+        h: r2(r.high  ?? r.close),
+        l: r2(r.low   ?? r.close),
+        c: r2(r.close),
+        v: r.volume ?? 0,
+      }));
+  } catch (err) {
+    console.warn(`[yahoo] history error for ${yahooSym}: ${err.message}`);
+    return [];   // history is optional — continue without it
   }
 }
 
-// ── Groq streaming (real AI, requires GROQ_API_KEY) ───────────────────────────
+// ── Data builder ──────────────────────────────────────────────────────────────
 
-function streamGroqAnalysis(symbol, stock, ws) {
-  const body = JSON.stringify({
-    model: GROQ_MODEL,
-    stream: true,
-    max_tokens: 512,
-    temperature: 0.7,
-    messages: [
-      {
-        role: 'system',
-        content: '你是一位專業的股票分析師，擅長基本面、技術面與市場情緒分析。回覆使用繁體中文，格式清晰，善用 **粗體** 標示重要資訊。回覆長度適中（200-350字），依序包含：整體評價、核心論述、目標價區間、主要風險。',
-      },
-      {
-        role: 'user',
-        content: `請分析以下股票並給出投資建議：\n股票代號：${symbol}\n公司名稱：${stock.name}\n目前股價：${stock.sym}${stock.price}\n今日漲跌：${stock.pct > 0 ? '+' : ''}${stock.pct}%（${stock.change > 0 ? '+' : ''}${stock.sym}${stock.change}）\n本益比：${stock.pe}\n市值：${stock.cap}\n殖利率：${stock.div}\nAI 信心指數：${stock.conf}%\n目前建議：${stock.verdict}`,
-      },
-    ],
-  });
+function buildStockData(rawSym, yahooSym, q, candles) {
+  const tw  = isTW(yahooSym);
+  const sym = tw ? 'NT$' : '$';
 
-  const req = https.request(
-    {
-      hostname: 'api.groq.com',
-      path: '/openai/v1/chat/completions',
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${GROQ_KEY}`,
-        'Content-Length': Buffer.byteLength(body),
-      },
+  const price  = q.regularMarketPrice ?? 0;
+  const change = r2(q.regularMarketChange ?? 0);
+  const pct    = r2(q.regularMarketChangePercent ?? 0);
+
+  return {
+    ticker:   rawSym.toUpperCase(),
+    name:     q.shortName ?? q.longName ?? rawSym,
+    fullName: q.longName  ?? q.shortName ?? rawSym,
+    market:   tw ? 'TW' : 'US',
+    currency: tw ? 'TWD' : 'USD',
+    sym,
+    price,
+    change,
+    pct,
+    cap:    fmtCap(q.marketCap, tw),
+    pe:     q.trailingPE  ? `${q.trailingPE.toFixed(1)}倍`          : '—',
+    eps:    q.trailingEps ? `${sym}${q.trailingEps.toFixed(2)}`      : '—',
+    beta:   q.beta        ? q.beta.toFixed(2)                        : '—',
+    vol:    fmtVol(q.regularMarketVolume, tw),
+    avgVol: fmtVol(q.averageDailyVolume3Month, tw),
+    hi52:   r2(q.fiftyTwoWeekHigh ?? price),
+    lo52:   r2(q.fiftyTwoWeekLow  ?? price),
+    div:    q.trailingAnnualDividendYield
+              ? `${(q.trailingAnnualDividendYield * 100).toFixed(2)}%`
+              : '—',
+    sector:  q.sector ?? q.industryDisp ?? '—',
+    history: candles,
+    // Placeholders; AI will fill in the meaningful ones via text
+    verdict: 'HOLD', conf: 50,
+    target: {
+      lo:  r2(price * 0.88),
+      mid: r2(price * 1.05),
+      hi:  r2(price * 1.15),
     },
-    (res) => {
-      // Non-200 means auth error / rate limit — fall back to mock
-      if (res.statusCode !== 200) {
-        console.warn(`[groq] HTTP ${res.statusCode} for ${symbol}, falling back to mock`);
-        res.resume();
-        return streamMockAnalysis(symbol, ws);
-      }
-
-      let buf = '';
-
-      res.on('data', (chunk) => {
-        buf += chunk.toString();
-        // SSE lines may be split across TCP segments; buffer and process line by line
-        const lines = buf.split('\n');
-        buf = lines.pop(); // last element may be incomplete
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || trimmed === 'data: [DONE]') continue;
-          if (!trimmed.startsWith('data: ')) continue;
-          try {
-            const delta = JSON.parse(trimmed.slice(6))?.choices?.[0]?.delta?.content;
-            if (delta) safeSend(ws, { type: 'aiChunk', text: delta });
-          } catch (_) {
-            // malformed SSE chunk — skip silently
-          }
-        }
-      });
-
-      res.on('end', () => safeSend(ws, { type: 'done' }));
-    }
-  );
-
-  req.on('error', (err) => {
-    console.error('[groq request error]', err.message);
-    safeSend(ws, { type: 'error', limitedData: true, message: '無法連線至 AI 服務，已切換至離線分析模式。' });
-    streamMockAnalysis(symbol, ws);
-  });
-
-  req.setTimeout(15_000, () => {
-    req.destroy();
-    console.warn(`[groq] timeout for ${symbol}`);
-    safeSend(ws, { type: 'error', limitedData: true, message: 'AI 回應逾時，已切換至離線分析模式。' });
-    streamMockAnalysis(symbol, ws);
-  });
-
-  req.write(body);
-  req.end();
+    risks: [], sentimentScore: 50, sentimentLabel: '分析中',
+    analysts: { buy: 0, hold: 0, sell: 0 },
+    summary: '', tags: [], news: [],
+  };
 }
 
-// ── Mock streaming fallback ───────────────────────────────────────────────────
+// ── Groq prompt ───────────────────────────────────────────────────────────────
 
-function streamMockAnalysis(symbol, ws) {
-  const text = MOCK_AI_TEXT[symbol]
-    ?? `目前尚無 **${symbol}** 的詳細分析資料，請確認股票代號後重試。\n\n支援的代號：2330、2454、2317、2412、2882、TSM、NVDA、AAPL、TSLA、MSFT`;
+function buildPrompt(d, yahooSym) {
+  const { ticker, fullName, market, sym, price, change, pct,
+          pe, cap, div, beta, hi52, lo52, vol, history } = d;
+
+  let trend = '';
+  if (history.length >= 20) {
+    const sl  = history.slice(-20);
+    const t   = ((sl.at(-1).c - sl[0].c) / sl[0].c * 100).toFixed(1);
+    trend = `近 20 日漲跌幅：${Number(t) >= 0 ? '+' : ''}${t}%`;
+  }
+
+  const ps = pct    >= 0 ? '+' : '';
+  const cs = change >= 0 ? '+' : '';
+
+  return `你是一位專業的股票分析師，精通台股（TWSE）與美股（NASDAQ/NYSE）投資分析。
+請根據以下**真實即時市場數據**，用繁體中文撰寫一份結構清晰的投資分析報告。
+
+【股票資訊】
+代號：${ticker}（Yahoo Finance: ${yahooSym}）
+公司：${fullName}
+市場：${market === 'TW' ? '台灣股市（TWSE）' : '美國股市'}
+
+【即時行情】
+目前股價：${sym}${price.toLocaleString()}
+今日漲跌：${cs}${sym}${Math.abs(change).toFixed(2)}（${ps}${pct.toFixed(2)}%）
+52週高／低：${sym}${hi52.toLocaleString()} ／ ${sym}${lo52.toLocaleString()}
+${trend}
+
+【基本面指標】
+本益比（TTM）：${pe}
+市值：${cap}
+現金殖利率：${div}
+Beta：${beta}
+今日成交量：${vol}
+
+【分析報告格式】
+請依序輸出以下段落，使用 **粗體** 標示重點：
+1. **核心評語** — 一句話說明建議（BUY / HOLD / SELL）及最關鍵理由
+2. **基本面分析** — 2~3 個投資亮點或隱憂
+3. **技術面觀察** — 近期趨勢方向、關鍵支撐位與壓力位
+4. **主要風險** — 條列 2~3 個風險因子
+5. **目標價** — 給出 12 個月低/中/高三個價位
+
+報告末尾必須獨立一行輸出（供程式解析，格式固定不變）：
+VERDICT: BUY|HOLD|SELL  CONF: 0-100`;
+}
+
+// ── Groq streaming ────────────────────────────────────────────────────────────
+
+async function streamGroq(prompt, ws) {
+  if (!groq) return streamMock(ws);
+
+  try {
+    const stream = await groq.chat.completions.create({
+      model: GROQ_MODEL,
+      messages: [{ role: 'user', content: prompt }],
+      stream: true,
+      max_tokens: 700,
+      temperature: 0.65,
+    });
+
+    let full = '';
+    for await (const chunk of stream) {
+      if (ws.readyState !== ws.OPEN) break;
+      const text = chunk.choices[0]?.delta?.content ?? '';
+      if (text) {
+        full += text;
+        safeSend(ws, { type: 'aiChunk', text });
+      }
+    }
+
+    // Parse VERDICT / CONF for the frontend to use in future enhancements
+    const vm = full.match(/VERDICT:\s*(BUY|HOLD|SELL)/i);
+    const cm = full.match(/CONF(?:IDENCE)?:\s*(\d+)/i);
+    safeSend(ws, {
+      type:    'done',
+      verdict: vm?.[1]?.toUpperCase() ?? null,
+      conf:    cm ? parseInt(cm[1], 10) : null,
+    });
+  } catch (err) {
+    console.error('[groq] stream error:', err.message);
+    safeSend(ws, {
+      type: 'error',
+      limitedData: true,
+      message: `AI 分析服務暫時不可用：${err.message}`,
+    });
+  }
+}
+
+// ── Mock fallback (no GROQ_KEY) ───────────────────────────────────────────────
+
+function streamMock(ws) {
+  const text =
+    '**AI 分析（Mock 模式）**\n\n' +
+    '✅ Yahoo Finance 真實股票數據已成功取得並回傳。\n\n' +
+    'AI 串流功能目前處於 Mock 模式，因為尚未設定 `GROQ_API_KEY`。\n\n' +
+    '請在 Render 後台的 **Environment Variables** 中加入：\n' +
+    '`GROQ_API_KEY = gsk_xxxxxxxxxxxx`\n\n' +
+    '設定後重新部署即可啟用真實 AI 分析串流。\n\n' +
+    'VERDICT: HOLD  CONF: 50';
 
   let pos = 0;
-  const timer = setInterval(() => {
-    if (ws.readyState !== ws.OPEN) { clearInterval(timer); return; }
+  const t = setInterval(() => {
+    if (ws.readyState !== ws.OPEN) { clearInterval(t); return; }
     const end = Math.min(pos + Math.ceil(Math.random() * 5 + 1), text.length);
     safeSend(ws, { type: 'aiChunk', text: text.slice(pos, end) });
     pos = end;
     if (pos >= text.length) {
-      clearInterval(timer);
-      safeSend(ws, { type: 'done' });
+      clearInterval(t);
+      safeSend(ws, { type: 'done', verdict: 'HOLD', conf: 50 });
     }
   }, 28);
 }
 
-// ── HTTP server (Render health check + WebSocket upgrade) ─────────────────────
+// ── Utilities ─────────────────────────────────────────────────────────────────
+
+function safeSend(ws, obj) {
+  if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
+}
+
+// ── HTTP (health check + WS upgrade) ─────────────────────────────────────────
 
 const server = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    return res.end(JSON.stringify({ status: 'ok', connections: wss.clients.size, ts: Date.now() }));
+    return res.end(JSON.stringify({
+      status: 'ok',
+      connections: wss.clients.size,
+      groq: !!groq,
+      ts: Date.now(),
+    }));
   }
   res.writeHead(404);
-  res.end('Not found');
+  res.end();
 });
 
 // ── WebSocket server ──────────────────────────────────────────────────────────
 
-const wss = new WebSocketServer({
-  server,
-  verifyClient: () => true, // allow all origins (GitHub Pages + localhost)
-});
+const wss = new WebSocketServer({ server, verifyClient: () => true });
 
 wss.on('connection', (ws, req) => {
   const ip = (req.headers['x-forwarded-for'] ?? req.socket.remoteAddress ?? 'unknown')
     .toString().split(',')[0].trim();
   console.log(`[+] connect   ip=${ip}  total=${wss.clients.size}`);
 
-  // Keep-alive: Render will close idle connections after 55s
   const pingTimer = setInterval(() => {
     if (ws.readyState === ws.OPEN) ws.ping();
   }, 30_000);
 
-  ws.on('pong', () => {}); // connection is alive
+  ws.on('pong', () => {});
 
-  ws.on('message', (raw) => {
+  ws.on('message', async (raw) => {
+    // ── Parse incoming message ──────────────────────────────────────────────
     let msg;
-    try {
-      msg = JSON.parse(raw.toString());
-    } catch {
-      return safeSend(ws, { type: 'error', message: '無法解析請求，請傳送合法的 JSON。' });
-    }
+    try { msg = JSON.parse(raw.toString()); }
+    catch { return safeSend(ws, { type: 'error', message: '請傳送合法的 JSON。' }); }
 
     if (msg.action !== 'requestAnalysis') {
       return safeSend(ws, { type: 'error', message: `未知的 action: "${msg.action}"` });
     }
 
-    // Normalise: Taiwan codes are numeric strings, US are alpha
-    const raw_symbol = String(msg.symbol ?? '').trim();
-    const symbol     = /^\d+$/.test(raw_symbol) ? raw_symbol : raw_symbol.toUpperCase();
-    const stock      = MOCK_STOCKS[symbol];
+    const rawSym   = String(msg.symbol ?? '').trim();
+    const yahooSym = toYahooSymbol(rawSym);
 
-    if (!stock) {
+    if (!rawSym) return safeSend(ws, { type: 'error', message: '請提供股票代號。' });
+
+    console.log(`[~] analyse   input=${rawSym}  yahoo=${yahooSym}  groq=${!!groq}`);
+
+    // ── Step 1: fetch real quote + history (parallel) ───────────────────────
+    let stockData;
+    try {
+      const [quote, candles] = await Promise.all([
+        fetchQuote(yahooSym),
+        fetchHistory(yahooSym),
+      ]);
+      stockData = buildStockData(rawSym, yahooSym, quote, candles);
+    } catch (err) {
+      console.error(`[yahoo] ${yahooSym}:`, err.message);
       return safeSend(ws, {
         type: 'error',
         limitedData: true,
-        message: `找不到「${symbol}」，支援代號：2330、2454、2317、2412、2882、TSM、NVDA、AAPL、TSLA、MSFT`,
+        message: err.message,
       });
     }
 
-    console.log(`[~] analyse   symbol=${symbol}  mode=${GROQ_KEY ? 'groq' : 'mock'}`);
+    // ── Step 2: push stock snapshot ─────────────────────────────────────────
+    safeSend(ws, { type: 'stockData', data: stockData });
 
-    // ① 立即推送股價快照
-    safeSend(ws, { type: 'stockData', data: stock });
-
-    // ② 串流 AI 分析（有金鑰走真實 Groq，否則用 Mock）
-    if (GROQ_KEY) {
-      streamGroqAnalysis(symbol, stock, ws);
-    } else {
-      streamMockAnalysis(symbol, ws);
-    }
+    // ── Step 3: stream AI analysis ──────────────────────────────────────────
+    const prompt = buildPrompt(stockData, yahooSym);
+    await streamGroq(prompt, ws);
   });
 
-  ws.on('close', (code, reason) => {
+  ws.on('close', (code) => {
     clearInterval(pingTimer);
     console.log(`[-] disconnect ip=${ip}  code=${code}  total=${wss.clients.size}`);
   });
 
-  ws.on('error', (err) => {
-    console.error(`[!] ws error  ip=${ip}  ${err.message}`);
-  });
+  ws.on('error', (err) => console.error(`[!] ws error ip=${ip}`, err.message));
 });
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
 server.listen(PORT, () => {
   console.log(`
-┌─────────────────────────────────────────┐
-│  StockAI Backend                        │
-│  port  : ${String(PORT).padEnd(31)}│
-│  groq  : ${(GROQ_KEY ? `enabled (${GROQ_MODEL})` : 'mock mode (no GROQ_API_KEY)').padEnd(31)}│
-└─────────────────────────────────────────┘`);
+╔══════════════════════════════════════════════════════╗
+║  StockAI Backend v2  ——  Real Data Mode              ║
+║  port   : ${String(PORT).padEnd(43)}║
+║  yahoo  : yahoo-finance2 (live quotes + K-line)      ║
+║  groq   : ${(GROQ_KEY ? `${GROQ_MODEL}` : 'MOCK MODE — set GROQ_API_KEY to enable').padEnd(43)}║
+╚══════════════════════════════════════════════════════╝`);
 });
