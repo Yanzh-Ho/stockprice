@@ -6,11 +6,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 
 // ── WebSocket URL ─────────────────────────────────────────────────────────────
-// 優先讀取 VITE_WS_URL（GitHub Actions 建置時由 vars.VITE_WS_URL 注入）
-// 未設定時指向 Render 生產環境；本機若無法連線則自動降級為 Mock 模式
-const WS_URL: string =
-  (import.meta.env.VITE_WS_URL as string | undefined) ??
-  'wss://stockprice-backend.onrender.com';
+const WS_URL = 'wss://stockprice-2ukw.onrender.com';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
