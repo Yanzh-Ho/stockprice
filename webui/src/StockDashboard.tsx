@@ -5,6 +5,13 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 
+// ── WebSocket URL ─────────────────────────────────────────────────────────────
+// 優先讀取 VITE_WS_URL（GitHub Actions 建置時由 vars.VITE_WS_URL 注入）
+// 未設定時指向 Render 生產環境；本機若無法連線則自動降級為 Mock 模式
+const WS_URL: string =
+  (import.meta.env.VITE_WS_URL as string | undefined) ??
+  'wss://stockprice-backend.onrender.com';
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Market    = 'TW' | 'US';
@@ -587,17 +594,80 @@ function ChatPanel({ stocks, onStockSelect }: { stocks: typeof STOCKS; onStockSe
     displayText: "您好！我是您的 AI 投資分析師。我從基本面、技術面與市場情緒三個維度分析股票，為您提供明確的**買進 / 持有 / 賣出**建議，附帶信心指數與風險評估。\n\n試著問我：**「分析台積電」** 或 **「現在應該買輝達嗎？」**",
     isTyping: false, isStreaming: false,
   }]);
-  const [input, setInput]       = useState('');
-  const [thinking, setThinking] = useState(false);
-  const bottomRef  = useRef<HTMLDivElement>(null);
-  const streamRef  = useRef<ReturnType<typeof setInterval> | null>(null);
-  const showSugg   = messages.length === 1;
+  const [input, setInput]           = useState('');
+  const [thinking, setThinking]     = useState(false);
+  const [wsConnected, setWsConnected] = useState(false);
+  const bottomRef    = useRef<HTMLDivElement>(null);
+  const streamRef    = useRef<ReturnType<typeof setInterval> | null>(null);
+  const wsRef        = useRef<WebSocket | null>(null);
+  const wsReadyRef   = useRef(false);
+  const activeMsgRef = useRef(0);
+  const showSugg     = messages.length === 1;
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
   useEffect(() => () => { if (streamRef.current) clearInterval(streamRef.current); }, []);
+
+  // WebSocket 連線（Render 後端）；連不上時自動降級為 Mock 模式
+  useEffect(() => {
+    let closed = false;
+    let ws: WebSocket;
+
+    function connect() {
+      try {
+        ws = new WebSocket(WS_URL);
+        wsRef.current = ws;
+
+        ws.onopen = () => { wsReadyRef.current = true; setWsConnected(true); };
+
+        ws.onclose = () => {
+          wsReadyRef.current = false;
+          setWsConnected(false);
+          if (!closed) setTimeout(connect, 5000); // 斷線後 5 秒重連
+        };
+
+        ws.onerror = () => { wsReadyRef.current = false; setWsConnected(false); };
+
+        ws.onmessage = ({ data }) => {
+          const msg = JSON.parse(data as string) as {
+            type: string; text?: string;
+            data?: { symbol?: string; ticker?: string };
+            message?: string;
+          };
+          const id = activeMsgRef.current;
+
+          if (msg.type === 'stockData' && msg.data) {
+            const sym = msg.data.symbol ?? msg.data.ticker ?? '';
+            if (sym && STOCKS[sym]) onStockSelect(sym);
+          }
+          if (msg.type === 'aiChunk' && msg.text) {
+            setMessages(prev =>
+              prev.map(m => m.id === id ? { ...m, displayText: (m.displayText ?? '') + msg.text } : m)
+            );
+          }
+          if (msg.type === 'done') {
+            setMessages(prev =>
+              prev.map(m => m.id === id ? { ...m, isStreaming: false } : m)
+            );
+            setThinking(false);
+          }
+          if (msg.type === 'error') {
+            setMessages(prev =>
+              prev.map(m => m.id === id
+                ? { ...m, isStreaming: false, displayText: (m.displayText ?? '') + `\n\n⚠️ ${msg.message ?? '發生錯誤'}` }
+                : m)
+            );
+            setThinking(false);
+          }
+        };
+      } catch (_) { /* 非瀏覽器環境直接略過 */ }
+    }
+
+    connect();
+    return () => { closed = true; ws?.close(); };
+  }, [onStockSelect]);
 
   const resolveTicker = (text: string): string | null => {
     const u = text.toUpperCase();
@@ -620,45 +690,56 @@ function ChatPanel({ stocks, onStockSelect }: { stocks: typeof STOCKS; onStockSe
 
   const send = useCallback((text: string, forceTicker?: string) => {
     if (!text.trim() || thinking) return;
-    const userMsg: Msg  = { id: Date.now(), role: 'user', displayText: text.trim() };
-    const typingMsg: Msg = { id: Date.now() + 1, role: 'ai', isTyping: true };
+
+    const userMsg: Msg   = { id: Date.now(), role: 'user', displayText: text.trim() };
+    const streamMsgId    = Date.now() + 1;
+    const typingMsg: Msg = { id: streamMsgId, role: 'ai', isTyping: true };
+
+    activeMsgRef.current = streamMsgId;
     setMessages(prev => [...prev, userMsg, typingMsg]);
     setInput('');
     setThinking(true);
 
-    const ticker    = forceTicker ?? resolveTicker(text);
-    const fullText  = ticker && AI_RESPONSES[ticker]
-      ? AI_RESPONSES[ticker]
-      : '我可以為您詳細分析以下股票：台積電（2330/TSM）、輝達（NVDA）、微軟（MSFT）、蘋果（AAPL）、特斯拉（TSLA）、聯發科（2454）、鴻海（2317）。\n\n請試試：**「分析輝達」** 或 **「台積電現在能買嗎？」**';
-    const finalTicker = ticker && AI_RESPONSES[ticker] ? ticker : null;
-    const streamMsgId = Date.now() + 2;
+    const ticker = forceTicker ?? resolveTicker(text);
 
-    // Phase 1: typing dots
-    const thinkDelay = 1200 + Math.random() * 600;
-    setTimeout(() => {
-      setMessages(prev =>
-        prev.map(m => m.isTyping
-          ? { id: streamMsgId, role: 'ai', isTyping: false, isStreaming: true, displayText: '' }
-          : m
-        )
-      );
-      // Phase 2: stream text char by char
-      let pos = 0;
-      streamRef.current = setInterval(() => {
-        pos = Math.min(pos + Math.ceil(Math.random() * 4 + 1), fullText.length);
+    if (wsReadyRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
+      // ── 真實後端路徑（Render WebSocket）────────────────────────────────────
+      setTimeout(() => {
         setMessages(prev =>
-          prev.map(m => m.id === streamMsgId ? { ...m, displayText: fullText.slice(0, pos) } : m)
+          prev.map(m => m.id === streamMsgId
+            ? { ...m, isTyping: false, isStreaming: true, displayText: '' } : m)
         );
-        if (pos >= fullText.length) {
-          clearInterval(streamRef.current!);
+        wsRef.current!.send(JSON.stringify({ action: 'requestAnalysis', symbol: ticker ?? text.trim() }));
+      }, 300);
+    } else {
+      // ── Mock 降級路徑（無後端連線時使用）──────────────────────────────────
+      const fullText    = ticker && AI_RESPONSES[ticker]
+        ? AI_RESPONSES[ticker]
+        : '我可以為您詳細分析以下股票：台積電（2330/TSM）、輝達（NVDA）、微軟（MSFT）、蘋果（AAPL）、特斯拉（TSLA）、聯發科（2454）、鴻海（2317）。\n\n請試試：**「分析輝達」** 或 **「台積電現在能買嗎？」**';
+      const finalTicker = ticker && AI_RESPONSES[ticker] ? ticker : null;
+
+      setTimeout(() => {
+        setMessages(prev =>
+          prev.map(m => m.id === streamMsgId
+            ? { id: streamMsgId, role: 'ai', isTyping: false, isStreaming: true, displayText: '' } : m)
+        );
+        let pos = 0;
+        streamRef.current = setInterval(() => {
+          pos = Math.min(pos + Math.ceil(Math.random() * 4 + 1), fullText.length);
           setMessages(prev =>
-            prev.map(m => m.id === streamMsgId ? { ...m, isStreaming: false, ticker: finalTicker } : m)
+            prev.map(m => m.id === streamMsgId ? { ...m, displayText: fullText.slice(0, pos) } : m)
           );
-          setThinking(false);
-          if (finalTicker && stocks[finalTicker]) onStockSelect(finalTicker);
-        }
-      }, 14);
-    }, thinkDelay);
+          if (pos >= fullText.length) {
+            clearInterval(streamRef.current!);
+            setMessages(prev =>
+              prev.map(m => m.id === streamMsgId ? { ...m, isStreaming: false, ticker: finalTicker } : m)
+            );
+            setThinking(false);
+            if (finalTicker && stocks[finalTicker]) onStockSelect(finalTicker);
+          }
+        }, 14);
+      }, 1200 + Math.random() * 600);
+    }
   }, [thinking, stocks, onStockSelect]);
 
   return (
@@ -668,7 +749,9 @@ function ChatPanel({ stocks, onStockSelect }: { stocks: typeof STOCKS; onStockSe
           <div style={{ width: 7, height: 7, borderRadius: '50%', background: '#00d98b', boxShadow: '0 0 7px #00d98b', animation: 'pulse 2s infinite' }} />
           <span style={{ fontWeight: 600, fontSize: 13 }}>AI 投資分析師</span>
         </div>
-        <span style={{ fontSize: 11, color: '#4a6890' }}>Claude Sonnet · Mock 模式</span>
+        <span style={{ fontSize: 11, color: wsConnected ? '#00d98b' : '#4a6890' }}>
+          Claude Sonnet · {wsConnected ? '已連線後端' : 'Mock 模式'}
+        </span>
       </div>
 
       <div style={{ flex: 1, overflowY: 'auto', padding: '16px 14px', display: 'flex', flexDirection: 'column', gap: 13, scrollbarWidth: 'thin', scrollbarColor: 'rgba(79,142,247,.2) transparent' }}>
