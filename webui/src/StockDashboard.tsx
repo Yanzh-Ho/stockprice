@@ -584,7 +584,11 @@ function AnalysisPanel({ stock }: { stock: Stock | null }) {
 
 // ── ChatPanel ─────────────────────────────────────────────────────────────────
 
-function ChatPanel({ stocks, onStockSelect }: { stocks: typeof STOCKS; onStockSelect: (t: string) => void }) {
+function ChatPanel({ stocks, onStockSelect, onLiveData }: {
+  stocks: typeof STOCKS;
+  onStockSelect: (t: string) => void;
+  onLiveData: (s: Stock) => void;
+}) {
   const [messages, setMessages] = useState<Msg[]>([{
     id: 0, role: 'ai',
     displayText: "您好！我是您的 AI 投資分析師。我從基本面、技術面與市場情緒三個維度分析股票，為您提供明確的**買進 / 持有 / 賣出**建議，附帶信心指數與風險評估。\n\n試著問我：**「分析台積電」** 或 **「現在應該買輝達嗎？」**",
@@ -629,14 +633,18 @@ function ChatPanel({ stocks, onStockSelect }: { stocks: typeof STOCKS; onStockSe
         ws.onmessage = ({ data }) => {
           const msg = JSON.parse(data as string) as {
             type: string; text?: string;
-            data?: { symbol?: string; ticker?: string };
+            data?: Stock;
             message?: string;
+            verdict?: string; conf?: number;
           };
           const id = activeMsgRef.current;
 
           if (msg.type === 'stockData' && msg.data) {
-            const sym = msg.data.symbol ?? msg.data.ticker ?? '';
-            if (sym && STOCKS[sym]) onStockSelect(sym);
+            // Push live data to parent state so every component re-renders
+            onLiveData(msg.data);
+            // Also navigate to that ticker
+            const sym = msg.data.ticker ?? '';
+            if (sym) onStockSelect(sym);
           }
           if (msg.type === 'aiChunk' && msg.text) {
             setMessages(prev =>
@@ -1092,6 +1100,14 @@ export default function StockDashboard() {
   const [ticker, setTicker]     = useState<string | null>(null);
   const [searchQ, setSearchQ]   = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
+  // Live data received from backend WebSocket — overrides static STOCKS mock
+  const [liveStocks, setLiveStocks] = useState<Record<string, Stock>>({});
+
+  const mergedStocks = { ...STOCKS, ...liveStocks };
+
+  function handleLiveData(s: Stock) {
+    setLiveStocks(prev => ({ ...prev, [s.ticker]: s }));
+  }
 
   // Inject fonts + global CSS
   useEffect(() => {
@@ -1120,7 +1136,7 @@ export default function StockDashboard() {
     }
   }, []);
 
-  const stock = ticker ? STOCKS[ticker] ?? null : null;
+  const stock = ticker ? (mergedStocks[ticker] ?? null) : null;
 
   function goStock(t: string) {
     setTicker(t);
@@ -1130,7 +1146,7 @@ export default function StockDashboard() {
   }
 
   const searchResults = searchQ.trim().length > 0
-    ? Object.values(STOCKS).filter(s => {
+    ? Object.values(mergedStocks).filter(s => {
         const q = searchQ.toLowerCase();
         return s.ticker.toLowerCase().includes(q) || s.name.toLowerCase().includes(q) || s.fullName.toLowerCase().includes(q);
       }).slice(0, 6)
@@ -1237,7 +1253,7 @@ export default function StockDashboard() {
 
           <div style={{ flex: 1, overflowY: 'auto', scrollbarWidth: 'thin', scrollbarColor: 'rgba(79,142,247,.2) transparent' }}>
             {WATCHLIST.map(t => {
-              const s = STOCKS[t];
+              const s = mergedStocks[t];
               if (!s) return null;
               const isUp   = s.pct >= 0;
               const active = ticker === t;
@@ -1269,15 +1285,15 @@ export default function StockDashboard() {
           {view === 'chat' && (
             <>
               <div className="sa-chat" style={{ width: 440, flexShrink: 0 }}>
-                <ChatPanel stocks={STOCKS} onStockSelect={goStock} />
+                <ChatPanel stocks={mergedStocks} onStockSelect={goStock} onLiveData={handleLiveData} />
               </div>
               <div className="sa-analysis" style={{ flex: 1, overflow: 'hidden', display: 'flex' }}>
                 <AnalysisPanel stock={stock} />
               </div>
             </>
           )}
-          {view === 'portfolio' && <PortfolioView stocks={STOCKS} onSelectStock={goStock} />}
-          {view === 'watchlist' && <WatchlistView stocks={STOCKS} onSelectStock={goStock} />}
+          {view === 'portfolio' && <PortfolioView stocks={mergedStocks} onSelectStock={goStock} />}
+          {view === 'watchlist' && <WatchlistView stocks={mergedStocks} onSelectStock={goStock} />}
           {view === 'news'      && <NewsView stock={stock} />}
           {view === 'settings'  && <SettingsView />}
         </main>
