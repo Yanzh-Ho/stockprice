@@ -13,7 +13,7 @@ const YF_HEADERS = {
   'Referer': 'https://finance.yahoo.com/'
 };
 
-// 直接打 Yahoo Finance v8 chart API（不用 library，繞過 crumb 問題）
+// 直接打 Yahoo Finance v8 chart API — 同時提取 meta 裡的所有可用欄位
 async function fetchStockFromYahoo(symbol) {
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1y`;
   const res = await fetch(url, {
@@ -21,17 +21,27 @@ async function fetchStockFromYahoo(symbol) {
     signal: AbortSignal.timeout(12000)
   });
   if (!res.ok) throw new Error(`Yahoo HTTP ${res.status} for ${symbol}`);
-  
+
   const json = await res.json();
   const result = json?.chart?.result?.[0];
   if (!result?.meta?.regularMarketPrice) throw new Error(`No price data for ${symbol}`);
-  
+
   const meta   = result.meta;
+  const price  = meta.regularMarketPrice;
+  const prev   = meta.regularMarketPreviousClose || meta.chartPreviousClose || price;
   const ts     = result.timestamp || [];
   const q      = result.indicators?.quote?.[0] || {};
   const closes = q.close  || [];
   const opens  = q.open   || [];
   const vols   = q.volume || [];
+
+  // 計算真實漲跌幅（API 有時盤後回 0，改由價差計算）
+  let changePercent = meta.regularMarketChangePercent || 0;
+  let change        = meta.regularMarketChange        || 0;
+  if (changePercent === 0 && prev && prev !== price) {
+    change        = +(price - prev).toFixed(2);
+    changePercent = +((change / prev) * 100).toFixed(2);
+  }
 
   const history = ts
     .map((t, i) => ({
@@ -45,32 +55,42 @@ async function fetchStockFromYahoo(symbol) {
   return {
     symbol:        meta.symbol,
     name:          meta.longName || meta.shortName || meta.symbol,
-    price:         meta.regularMarketPrice,
-    changePercent: meta.regularMarketChangePercent || 0,
+    price,
+    change,
+    changePercent,
+    // v8 meta 已包含這些欄位，直接提取
+    volume:  meta.regularMarketVolume ? `${(meta.regularMarketVolume / 1e4).toFixed(1)} 萬張` : '---',
+    high52w: meta.fiftyTwoWeekHigh    ? `NT$${meta.fiftyTwoWeekHigh}`                         : null,
+    low52w:  meta.fiftyTwoWeekLow     ? `NT$${meta.fiftyTwoWeekLow}`                          : null,
     history
   };
 }
 
-// 抓補充財務指標（PE、EPS、市值）
+// 抓補充財務指標（PE、EPS、市值）— 同時試 query1 與 query2
 async function fetchQuoteDetail(symbol) {
-  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbol)}`;
-  const res = await fetch(url, {
-    headers: YF_HEADERS,
-    signal: AbortSignal.timeout(8000)
-  });
-  if (!res.ok) return {};
-  const json = await res.json();
-  const q = json?.quoteResponse?.result?.[0];
-  if (!q) return {};
-  return {
-    marketCap: q.marketCap      ? `${(q.marketCap / 1e12).toFixed(2)} 兆`   : '---',
-    peRatio:   q.trailingPE     ? `${q.trailingPE.toFixed(1)}x`              : '---',
-    eps:       q.epsTrailingTwelveMonths ? `${q.epsTrailingTwelveMonths.toFixed(2)} 元` : '---',
-    volume:    q.regularMarketVolume ? `${(q.regularMarketVolume / 1e4).toFixed(1)} 萬張` : '---',
-    high52w:   q.fiftyTwoWeekHigh ? `NT$${q.fiftyTwoWeekHigh}` : '---',
-    low52w:    q.fiftyTwoWeekLow  ? `NT$${q.fiftyTwoWeekLow}`  : '---'
-  };
+  for (const host of ['query1', 'query2']) {
+    try {
+      const url = `https://${host}.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbol)}`;
+      const res = await fetch(url, { headers: YF_HEADERS, signal: AbortSignal.timeout(8000) });
+      if (!res.ok) continue;
+      const json = await res.json();
+      const q = json?.quoteResponse?.result?.[0];
+      if (!q) continue;
+      return {
+        marketCap: q.marketCap               ? `${(q.marketCap / 1e12).toFixed(2)} 兆`         : '---',
+        peRatio:   q.trailingPE              ? `${q.trailingPE.toFixed(1)}x`                    : '---',
+        eps:       q.epsTrailingTwelveMonths ? `${q.epsTrailingTwelveMonths.toFixed(2)} 元`      : '---',
+        dividendYield: q.dividendYield       ? `${(q.dividendYield * 100).toFixed(2)}%`         : '---',
+        beta:      q.beta                    ? q.beta.toFixed(2)                                : '---',
+        // 補充 52w（若 v8 已有則不覆蓋）
+        _high52w:  q.fiftyTwoWeekHigh ? `NT$${q.fiftyTwoWeekHigh}` : null,
+        _low52w:   q.fiftyTwoWeekLow  ? `NT$${q.fiftyTwoWeekLow}`  : null,
+      };
+    } catch(e) {}
+  }
+  return {};
 }
+
 
 // 台股純數字 → 先試 .TWO 再試 .TW；美股直打
 async function resolveSymbol(input) {
@@ -108,11 +128,15 @@ wss.on('connection', (ws) => {
       try {
         const base   = await resolveSymbol(input);
         const detail = await fetchQuoteDetail(base.symbol).catch(() => ({}));
-        stockData = { ...base, ...detail };
+        // _high52w/_low52w 是 detail 的備用值，只在 v8 沒拿到時使用
+        const { _high52w, _low52w, ...cleanDetail } = detail;
+        stockData = { ...base, ...cleanDetail };
         if (!stockData.history?.length) stockData.history = mockHistory(stockData.price);
         if (!stockData.marketCap) stockData.marketCap = '---';
-        if (!stockData.high52w)   stockData.high52w   = `NT$${(stockData.price * 1.2).toFixed(1)}`;
-        if (!stockData.low52w)    stockData.low52w    = `NT$${(stockData.price * 0.8).toFixed(1)}`;
+        if (!stockData.peRatio)   stockData.peRatio   = '---';
+        if (!stockData.eps)       stockData.eps       = '---';
+        if (!stockData.high52w)   stockData.high52w   = _high52w || `NT$${(stockData.price * 1.2).toFixed(1)}`;
+        if (!stockData.low52w)    stockData.low52w    = _low52w  || `NT$${(stockData.price * 0.8).toFixed(1)}`;
       } catch (fetchErr) {
         console.error('Fetch failed:', fetchErr.message);
         const mockPrice = 100 + Math.floor(Math.random() * 100);
