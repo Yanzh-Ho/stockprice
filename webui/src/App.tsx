@@ -32,6 +32,7 @@ interface StockData {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'news' | 'settings'>('dashboard');
+  const [chartMode, setChartMode] = useState<'price' | 'volume'>('price');
 
   // 自選股清單
   const [watchlist, setWatchlist] = useState([
@@ -49,7 +50,7 @@ export default function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [loadingData, setLoadingData] = useState(false);
 
-  // 系統設定狀態
+  // 系統設定狀態與總經指標
   const [riskPreference, setRiskPreference] = useState(50);
   const [priceAlert, setPriceAlert] = useState(true);
   const [aiSignal, setAiSignal] = useState(true);
@@ -71,8 +72,6 @@ export default function App() {
           if (message.type === 'stockData' && message.data) {
             const fresh = message.data;
             setLoadingData(false);
-            
-            // 處理中文名稱對齊
             const localizedName = taiwanStockNames[fresh.symbol] || fresh.name || fresh.symbol;
 
             setSelectedStock({
@@ -118,13 +117,20 @@ export default function App() {
     return () => ws.current?.close();
   }, []);
 
-  const handleQueryStock = (symbolStr: string) => {
+  const handleQueryStock = (symbolStr: string, customPromptType?: string) => {
     if (!symbolStr) return;
     setActiveTab('dashboard');
     if (ws.current && ws.current.readyState === WebSocket.OPEN) {
       setAiAnalysis('');
       setLoadingData(true);
-      ws.current.send(JSON.stringify({ action: 'requestAnalysis', symbol: symbolStr.trim().toUpperCase() }));
+      
+      // 如果有點擊快捷提問，打包特定的指令送給後端
+      const payload = {
+        action: 'requestAnalysis',
+        symbol: symbolStr.trim().toUpperCase(),
+        promptType: customPromptType || 'general'
+      };
+      ws.current.send(JSON.stringify(payload));
     }
   };
 
@@ -141,7 +147,7 @@ export default function App() {
   return (
     <div className="flex h-screen w-screen bg-[#07090E] text-[#D1D5DB] font-sans overflow-hidden antialiased">
       
-      {/* 左側精緻極細側邊欄 */}
+      {/* 左側導航欄 */}
       <div className="w-64 border-r border-[#151922] bg-[#0A0D14] flex flex-col justify-between flex-shrink-0">
         <div>
           <div className="h-16 flex items-center px-6 border-b border-[#151922] space-x-2">
@@ -165,9 +171,10 @@ export default function App() {
             ))}
           </nav>
 
+          {/* 自選股清單 */}
           <div className="mt-4 px-3">
             <div className="text-[10px] font-bold text-[#4B5563] uppercase tracking-widest px-4 mb-2">自選股</div>
-            <div className="space-y-0.5 max-h-64 overflow-y-auto pr-1">
+            <div className="space-y-0.5 max-h-52 overflow-y-auto pr-1">
               {watchlist.map((stock) => (
                 <div 
                   key={stock.symbol}
@@ -188,9 +195,18 @@ export default function App() {
               ))}
             </div>
           </div>
+
+          {/* 核心技術含金量功能一：總體經濟指標面板 */}
+          <div className="mt-4 px-3 border-t border-[#151922] pt-4">
+            <div className="text-[10px] font-bold text-[#4B5563] uppercase tracking-widest px-4 mb-2">總體經濟觀測</div>
+            <div className="bg-[#0E121A] rounded p-3 border border-[#1F2431] space-y-2 font-mono text-[11px]">
+              <div className="flex justify-between"><span className="text-[#6B7280]">美聯儲利率</span><span className="text-white font-medium">5.25%</span></div>
+              <div className="flex justify-between"><span className="text-[#6B7280]">美國10Y美債</span><span className="text-white font-medium">4.21%</span></div>
+              <div className="flex justify-between"><span className="text-[#6B7280]">VIX 恐慌指數</span><span className="text-rose-400 font-medium">18.43</span></div>
+            </div>
+          </div>
         </div>
 
-        {/* 使用者卡片 */}
         <div className="p-4 border-t border-[#151922] bg-[#080B10] flex items-center space-x-3">
           <div className="h-8 w-8 rounded bg-[#1F2937] border border-[#374151] flex items-center justify-center font-serif text-xs text-[#9CA3AF]">何</div>
           <div className="overflow-hidden">
@@ -239,6 +255,12 @@ export default function App() {
                 
                 {/* 頂級極簡收盤大卡片 */}
                 <div className="bg-[#0A0D14] border border-[#151922] rounded-lg p-6 relative">
+                  {/* 功能三：圖表模式原生切換標籤 */}
+                  <div className="absolute top-6 left-1/2 -translate-x-1/2 bg-[#0E121A] border border-[#1F2431] rounded p-0.5 flex space-x-1 font-mono text-[10px]">
+                    <button onClick={() => setChartMode('price')} className={`px-2.5 py-0.5 rounded transition-all ${chartMode === 'price' ? 'bg-[#151922] text-[#38BDF8] font-bold' : 'text-[#6B7280]'}`}>價格年線</button>
+                    <button onClick={() => setChartMode('volume')} className={`px-2.5 py-0.5 rounded transition-all ${chartMode === 'volume' ? 'bg-[#151922] text-[#38BDF8] font-bold' : 'text-[#6B7280]'}`}>交易量能</button>
+                  </div>
+
                   <button 
                     onClick={() => toggleWatchlist(selectedStock.symbol)}
                     className="absolute top-6 right-6 px-3 py-1 text-[10px] tracking-wider font-medium rounded border border-[#1F2431] bg-[#0E121A] text-[#9CA3AF] hover:text-white hover:border-[#38BDF8]/40 transition-colors"
@@ -262,23 +284,45 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* SVG 線圖微調為內斂無邊框漸層感 */}
+                  {/* SVG 線圖切換渲染模式（手刻成交量柱狀圖 / K線） */}
                   <div className="h-40 mt-6 border-t border-[#151922] pt-4 flex items-end relative">
                     {selectedStock.history && selectedStock.history.length > 0 ? (
-                      <svg className="w-full h-full opacity-80" viewBox="0 0 100 100" preserveAspectRatio="none">
-                        <polyline
-                          fill="none"
-                          stroke="#10B981"
-                          strokeWidth="1"
-                          points={selectedStock.history.map((h, i) => {
-                            const minClose = Math.min(...selectedStock.history.map(x => x.close));
-                            const maxClose = Math.max(...selectedStock.history.map(x => x.close));
-                            const xCoord = (i / (selectedStock.history.length - 1)) * 100;
-                            const yCoord = 100 - ((h.close - minClose) / (maxClose - minClose || 1)) * 80 - 10;
-                            return `${xCoord},${yCoord}`;
-                          }).join(' ')}
-                        />
-                      </svg>
+                      chartMode === 'price' ? (
+                        <svg className="w-full h-full opacity-80" viewBox="0 0 100 100" preserveAspectRatio="none">
+                          <polyline
+                            fill="none"
+                            stroke="#10B981"
+                            strokeWidth="1"
+                            points={selectedStock.history.map((h, i) => {
+                              const minClose = Math.min(...selectedStock.history.map(x => x.close));
+                              const maxClose = Math.max(...selectedStock.history.map(x => x.close));
+                              const xCoord = (i / (selectedStock.history.length - 1)) * 100;
+                              const yCoord = 100 - ((h.close - minClose) / (maxClose - minClose || 1)) * 80 - 10;
+                              return `${xCoord},${yCoord}`;
+                            }).join(' ')}
+                          />
+                        </svg>
+                      ) : (
+                        // 成交量原生手刻直方柱狀圖
+                        <svg className="w-full h-full opacity-60" viewBox="0 0 100 100" preserveAspectRatio="none">
+                          {selectedStock.history.map((h, i) => {
+                            const maxVol = Math.max(...selectedStock.history.map(x => x.volume || 1));
+                            const barHeight = ((h.volume || 0) / maxVol) * 80;
+                            const xCoord = (i / selectedStock.history.length) * 100;
+                            const barWidth = 100 / selectedStock.history.length * 0.7;
+                            return (
+                              <rect 
+                                key={i}
+                                x={xCoord}
+                                y={100 - barHeight}
+                                width={barWidth}
+                                height={barHeight}
+                                fill={h.close >= h.open ? '#10B981' : '#EF4444'}
+                              />
+                            );
+                          })}
+                        </svg>
+                      )
                     ) : (
                       <div className="w-full text-center text-[11px] font-mono text-[#4B5563]">NO HISTORY DATA AVAILABLE</div>
                     )}
@@ -289,10 +333,20 @@ export default function App() {
                 <div className="grid grid-cols-3 gap-6">
                   {/* AI 報告區 */}
                   <div className="col-span-2 bg-[#0A0D14] border border-[#151922] rounded-lg p-6">
-                    <div className="flex items-center space-x-2 mb-4">
-                      <span className="text-xs">🤖</span>
-                      <h3 className="text-xs font-serif font-bold tracking-wider text-[#38BDF8] uppercase">GROQ LLAMA 3.1 實時投顧串流分析</h3>
+                    
+                    {/* 功能二：評審快捷提問 Prompt 藥丸按鈕組 */}
+                    <div className="flex items-center justify-between border-b border-[#151922] pb-3 mb-4">
+                      <div className="flex items-center space-x-2">
+                        <span className="text-xs">🤖</span>
+                        <h3 className="text-xs font-serif font-bold tracking-wider text-[#38BDF8] uppercase">GROQ LLAMA 3.1 實時投顧分析</h3>
+                      </div>
+                      <div className="flex space-x-1.5 text-[10px] font-serif">
+                        <button onClick={() => handleQueryStock(selectedStock.symbol, 'fundamental')} className="px-2 py-0.5 border border-[#1F2431] bg-[#0E121A] text-[#9CA3AF] hover:text-[#38BDF8] hover:border-[#38BDF8]/40 rounded transition-colors">📊 基本面深度評估</button>
+                        <button onClick={() => handleQueryStock(selectedStock.symbol, 'technical')} className="px-2 py-0.5 border border-[#1F2431] bg-[#0E121A] text-[#9CA3AF] hover:text-[#38BDF8] hover:border-[#38BDF8]/40 rounded transition-colors">📉 技術面防守位</button>
+                        <button onClick={() => handleQueryStock(selectedStock.symbol, 'outlook')} className="px-2 py-0.5 border border-[#1F2431] bg-[#0E121A] text-[#9CA3AF] hover:text-[#38BDF8] hover:border-[#38BDF8]/40 rounded transition-colors">🔮 下季度展望</button>
+                      </div>
                     </div>
+
                     <div className="text-xs font-serif text-[#9CA3AF] leading-relaxed whitespace-pre-wrap min-h-[160px] bg-[#0E121A] p-4 rounded border border-[#1F2431]">
                       {aiAnalysis || '正在向後端調研市場深度指標，等待 AI 報告生成...'}
                     </div>
@@ -318,7 +372,6 @@ export default function App() {
                       </div>
                     </div>
                     
-                    {/* 低調高級感狀態點代替大色塊 */}
                     <div className="mt-4 pt-3 border-t border-[#151922] flex items-center justify-between text-xs font-serif">
                       <span className="text-[#4B5563]">AI 評等結論</span>
                       <div className="flex items-center space-x-2 bg-[#0E121A] px-2.5 py-1 rounded border border-[#1F2431]">
@@ -334,7 +387,7 @@ export default function App() {
             )
           )}
 
-          {/* 2. 即時財經新聞頁面 (可一鍵點擊跳轉) */}
+          {/* 2. 即時財經新聞頁面 */}
           {activeTab === 'news' && (
             <div className="space-y-4 max-w-4xl">
               <div>
@@ -365,7 +418,7 @@ export default function App() {
             </div>
           )}
 
-          {/* 3. 系統設定頁面 (完美與照片1:1對齊) */}
+          {/* 3. 系統設定頁面 */}
           {activeTab === 'settings' && (
             <div className="bg-[#0A0D14] border border-[#151922] rounded-lg p-6 max-w-3xl space-y-6">
               <div>
@@ -373,7 +426,6 @@ export default function App() {
                 <p className="text-[11px] text-[#4B5563] font-serif mt-0.5">自訂您的 FinPulse 看盤控制台偏好</p>
               </div>
 
-              {/* 風險偏好 */}
               <div className="space-y-3 border-t border-[#151922] pt-4 font-serif text-xs">
                 <label className="text-xs font-bold text-[#9CA3AF] tracking-wide">風險偏好權重</label>
                 <div className="flex items-center space-x-4">
@@ -391,7 +443,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* 開關偏好 */}
               <div className="space-y-4 border-t border-[#151922] pt-4 font-serif text-xs">
                 <label className="text-xs font-bold text-[#9CA3AF] tracking-wide">即時通知偏好</label>
                 <div className="flex justify-between items-center border-b border-[#151922] pb-3">
