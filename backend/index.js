@@ -17,7 +17,7 @@ const Groq = require('groq-sdk');
 // ── Config ────────────────────────────────────────────────────────────────────
 const PORT       = process.env.PORT        || 8080;
 const GROQ_KEY   = process.env.GROQ_API_KEY;
-const GROQ_MODEL = process.env.GROQ_MODEL  || 'llama3-8b-8192';
+const GROQ_MODEL = process.env.GROQ_MODEL  || 'llama-3.1-8b-instant';
 
 if (!GROQ_KEY) {
   console.warn('[warn] GROQ_API_KEY is not set — AI analysis will run in MOCK mode.');
