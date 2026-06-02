@@ -51,14 +51,14 @@ const DEFAULT_WATCHLIST: WatchItem[] = [
 ];
 
 const MOCK_NEWS = [
-  { id: 1, time: '10:32', title: 'Fed 維持利率不變，市場反應平淡，等待下次會議指引', source: 'Reuters', category: 'macro', impact: 'neutral' },
-  { id: 2, time: '09:45', title: '台積電 Q2 法說會：CoWoS 產能滿載，下半年營收持續看好', source: 'Economic Daily', category: 'TW', impact: 'positive' },
-  { id: 3, time: '09:12', title: 'NVIDIA 下一代 Blackwell 晶片需求超預期，台系供應鏈全面受惠', source: 'DigiTimes', category: 'tech', impact: 'positive' },
-  { id: 4, time: '08:55', title: '美股三大指數開盤走跌，科技股估值承壓', source: 'Bloomberg', category: 'US', impact: 'negative' },
-  { id: 5, time: '08:30', title: '中國出口數據不如預期，製造業 PMI 連三月下滑', source: 'NBS', category: 'macro', impact: 'negative' },
-  { id: 6, time: '07:50', title: '聯發科推出天璣 9400+，AI 手機新周期正式啟動', source: 'TechNews', category: 'TW', impact: 'positive' },
-  { id: 7, time: '07:15', title: '鴻海與 NVIDIA 深化 AI 伺服器合作，黑熊超算正式落地', source: 'CTimes', category: 'TW', impact: 'positive' },
-  { id: 8, time: '06:30', title: 'Apple WWDC 2025：Apple Intelligence 全面整合，iPhone 需求復甦訊號', source: 'MacRumors', category: 'tech', impact: 'positive' },
+  { id: 1, time: '10:32', title: 'Fed 維持利率不變，市場反應平淡，等待下次會議指引', source: 'Reuters', category: 'macro', impact: 'neutral', url: 'https://www.reuters.com/markets/us/fed-holds-rates-steady/' },
+  { id: 2, time: '09:45', title: '台積電 Q2 法說會：CoWoS 產能滿載，下半年營收持續看好', source: 'Economic Daily', category: 'TW', impact: 'positive', url: 'https://money.udn.com/money/cate/5607' },
+  { id: 3, time: '09:12', title: 'NVIDIA 下一代 Blackwell 晶片需求超預期，台系供應鏈全面受惠', source: 'DigiTimes', category: 'tech', impact: 'positive', url: 'https://www.digitimes.com.tw/tech/dt/n/shwnws.asp?cnlid=13' },
+  { id: 4, time: '08:55', title: '美股三大指數開盤走跌，科技股估值承壓', source: 'Bloomberg', category: 'US', impact: 'negative', url: 'https://www.bloomberg.com/markets' },
+  { id: 5, time: '08:30', title: '中國出口數據不如預期，製造業 PMI 連三月下滑', source: 'NBS', category: 'macro', impact: 'negative', url: 'https://tw.stock.yahoo.com/international-markets' },
+  { id: 6, time: '07:50', title: '聯發科推出天璣 9400+，AI 手機新周期正式啟動', source: 'TechNews', category: 'TW', impact: 'positive', url: 'https://technews.tw/category/chip/' },
+  { id: 7, time: '07:15', title: '鴻海與 NVIDIA 深化 AI 伺服器合作，黑熊超算正式落地', source: 'CTimes', category: 'TW', impact: 'positive', url: 'https://www.ctimes.com.tw/DispNews/2024/AI' },
+  { id: 8, time: '06:30', title: 'Apple WWDC 2025：Apple Intelligence 全面整合，iPhone 需求復甦訊號', source: 'MacRumors', category: 'tech', impact: 'positive', url: 'https://www.macrumors.com/' },
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -493,7 +493,8 @@ export default function App() {
               <div className="space-y-2">
                 {MOCK_NEWS.map(news => (
                   <div key={news.id}
-                    className="bg-[#0F131A] border border-slate-800 rounded-xl p-4 hover:border-slate-600 transition-colors cursor-pointer group">
+                    onClick={() => window.open(news.url, '_blank', 'noopener,noreferrer')}
+                    className="bg-[#161F2E] border border-slate-800 rounded-xl p-4 hover:border-[#38BDF8] hover:bg-[#1A2640] transition-all cursor-pointer group">
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-2 flex-wrap">
@@ -505,7 +506,10 @@ export default function App() {
                         </div>
                         <p className="text-sm text-slate-200 font-medium leading-snug group-hover:text-white transition-colors">{news.title}</p>
                       </div>
-                      <div className="text-xs text-slate-600 flex-shrink-0 mt-1">{news.time}</div>
+                      <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
+                        <span className="text-xs text-slate-600">{news.time}</span>
+                        <span className="text-[10px] text-slate-700 group-hover:text-[#38BDF8] transition-colors">↗ 開啟</span>
+                      </div>
                     </div>
                   </div>
                 ))}
