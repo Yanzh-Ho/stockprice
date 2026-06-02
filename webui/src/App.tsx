@@ -61,6 +61,16 @@ const MOCK_NEWS = [
   { id: 8, time: '06:30', title: 'Apple WWDC 2025：Apple Intelligence 全面整合，iPhone 需求復甦訊號', source: 'MacRumors', category: 'tech', impact: 'positive', url: 'https://www.macrumors.com/' },
 ];
 
+const taiwanStockNames: Record<string, string> = {
+  '2330.TW': '台積電',  '2454.TW': '聯發科',  '2317.TW': '鴻海',
+  '2412.TW': '中華電',  '2449.TW': '京元電子', '2308.TW': '台達電',
+  '2382.TW': '廣達',    '2357.TW': '華碩',     '2303.TW': '聯電',
+  '2881.TW': '富邦金',  '2882.TW': '國泰金',   '2891.TW': '中信金',
+  '6505.TW': '台塑化',  '1301.TW': '台塑',     '1303.TW': '南亞',
+  '2002.TW': '中鋼',    '3008.TW': '大立光',   '2395.TW': '研華',
+  '2379.TW': '瑞昱',    '2408.TW': '南亞科',   '3711.TW': '日月光投控',
+};
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function verdictColor(v: string) {
   if (v === 'BUY')  return 'text-emerald-400';
@@ -168,14 +178,17 @@ export default function App() {
           };
 
           if (msg.type === 'stockData' && msg.data) {
-            const s = msg.data;
+            const raw = msg.data;
+            const yahooKey = raw.market === 'TW' ? `${raw.ticker}.TW` : raw.ticker;
+            const zhName = taiwanStockNames[yahooKey];
+            const s = zhName ? { ...raw, name: zhName, fullName: zhName } : raw;
             setIsLoading(false);
             setSelectedStock(s);
             setLiveVerdict('');
             setLiveConf(0);
             setWatchlist(prev => prev.map(item =>
               item.symbol.toUpperCase() === s.ticker.toUpperCase()
-                ? { ...item, price: s.price, pct: s.pct, sym: s.sym, isLive: true }
+                ? { ...item, price: s.price, pct: s.pct, sym: s.sym, isLive: true, name: zhName || item.name }
                 : item
             ));
           }

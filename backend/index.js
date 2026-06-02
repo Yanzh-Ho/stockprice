@@ -77,7 +77,7 @@ const fix0 = (n) => (n != null ? Math.round(n) : 0);
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function fetchQuote(yahooSym) {
-  const q = await yf.quote(yahooSym, {}, { validateResult: false });
+  const q = await yf.quote(yahooSym, { lang: 'zh-TW', region: 'TW' }, { validateResult: false });
   if (!q || !q.regularMarketPrice) {
     throw new Error(`找不到「${yahooSym}」的報價資料，請確認股票代號是否正確。`);
   }
