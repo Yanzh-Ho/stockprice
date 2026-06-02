@@ -1,426 +1,179 @@
-'use strict';
-require('dotenv').config();
-
+const express = require('express');
 const http = require('http');
-const { WebSocketServer } = require('ws');
+const WebSocket = require('ws');
+const yahooFinance = require('yahoo-finance2').default;
+const { Groq } = require('groq-sdk');
 
-// ── yahoo-finance2 v3 requires explicit instantiation ─────────────────────────
-const YahooFinance = require('yahoo-finance2').default;
-const yf = new YahooFinance({
-  suppressNotices: ['yahooSurvey', 'ripHistorical'],
-  validation: { logErrors: false, logOptionsErrors: false },
+const app = express();
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
+
+// 初始化 Groq (會自動讀取環境變數 GROQ_API_KEY)
+const groq = new Groq();
+
+// 全球語系防錯設定
+yahooFinance.setGlobalConfig({
+  queue: { concurrency: 4 },
+  validation: { logErrors: false }
 });
 
-// ── groq-sdk ──────────────────────────────────────────────────────────────────
-const Groq = require('groq-sdk');
-
-// ── Config ────────────────────────────────────────────────────────────────────
-const PORT       = process.env.PORT        || 8080;
-const GROQ_KEY   = process.env.GROQ_API_KEY;
-const GROQ_MODEL = process.env.GROQ_MODEL  || 'llama-3.1-8b-instant';
-
-if (!GROQ_KEY) {
-  console.warn('[warn] GROQ_API_KEY is not set — AI analysis will run in MOCK mode.');
-  console.warn('[warn] Set GROQ_API_KEY in Render > Environment to enable real AI.');
-}
-
-const groq = GROQ_KEY ? new Groq({ apiKey: GROQ_KEY }) : null;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 1. SYMBOL HELPER
-// ─────────────────────────────────────────────────────────────────────────────
-
-/** "2330" → "2330.TW"  |  "AAPL" → "AAPL"  |  "2330.TW" → "2330.TW" */
-function toYahooSymbol(raw) {
-  const s = raw.trim().toUpperCase();
-  if (/^\d{4,6}$/.test(s))           return `${s}.TW`;  // pure number → TW
-  if (/^\d{4,6}\.(TW|TWO)$/i.test(s)) return s;          // already has suffix
-  return s;                                               // US stock (AAPL etc.)
-}
-
-const isTW = (sym) => /\.(TW|TWO)$/i.test(sym);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 2. NUMBER FORMATTERS
-// ─────────────────────────────────────────────────────────────────────────────
-
-function fmtMarketCap(n, tw) {
-  if (!n || n <= 0) return '—';
-  if (tw) {
-    if (n >= 1e12) return `${(n / 1e12).toFixed(1)} 兆元`;
-    if (n >= 1e8)  return `${Math.round(n / 1e8).toLocaleString()} 億元`;
-    return `${Math.round(n / 1e6).toLocaleString()} 百萬元`;
-  }
-  if (n >= 1e12) return `$${(n / 1e12).toFixed(2)}T`;
-  if (n >= 1e9)  return `$${(n / 1e9).toFixed(1)}B`;
-  return `$${(n / 1e6).toFixed(0)}M`;
-}
-
-function fmtVolume(n, tw) {
-  if (!n || n <= 0) return '—';
-  if (tw) {
-    const lots = n / 1000;
-    return lots >= 10000
-      ? `${(lots / 10000).toFixed(1)} 萬張`
-      : `${Math.round(lots).toLocaleString()} 張`;
-  }
-  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
-  if (n >= 1e3) return `${(n / 1e3).toFixed(0)}K`;
-  return String(n);
-}
-
-const fix2 = (n) => (n != null ? +n.toFixed(2) : 0);
-const fix0 = (n) => (n != null ? Math.round(n) : 0);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 3. YAHOO FINANCE FETCHERS
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function fetchQuote(yahooSym) {
-  const q = await yf.quote(yahooSym, { lang: 'zh-TW', region: 'TW' }, { validateResult: false });
-  if (!q || !q.regularMarketPrice) {
-    throw new Error(`找不到「${yahooSym}」的報價資料，請確認股票代號是否正確。`);
-  }
-  return q;
-}
-
-async function fetchHistory(yahooSym) {
-  try {
-    const period2 = new Date();
-    const period1 = new Date(period2);
-    period1.setFullYear(period1.getFullYear() - 1);
-
-    const rows = await yf.historical(
-      yahooSym,
-      { period1, period2, interval: '1d' },
-      { validateResult: false }
-    );
-
-    if (!Array.isArray(rows) || rows.length === 0) return [];
-
-    return rows
-      .filter(r => r.close != null && r.close > 0)
-      .map(r => ({
-        o: fix2(r.open  ?? r.close),
-        h: fix2(r.high  ?? r.close),
-        l: fix2(r.low   ?? r.close),
-        c: fix2(r.close),
-        v: r.volume ?? 0,
-      }));
-  } catch (err) {
-    // History is optional — return empty array rather than crashing
-    console.warn(`[yahoo] history fetch failed for ${yahooSym}: ${err.message}`);
-    return [];
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 4. BUILD stockData PAYLOAD
-// ─────────────────────────────────────────────────────────────────────────────
-
-function buildStockPayload(rawSym, yahooSym, quote, candles) {
-  const tw  = isTW(yahooSym);
-  const sym = tw ? 'NT$' : '$';
-
-  const price  = fix2(quote.regularMarketPrice ?? 0);
-  const change = fix2(quote.regularMarketChange ?? 0);
-  const pct    = fix2(quote.regularMarketChangePercent ?? 0);
-
-  // Target price: rough estimate ±10–15% from current price
-  const lo  = fix0(price * 0.88);
-  const mid = fix0(price * 1.06);
-  const hi  = fix0(price * 1.16);
-
-  return {
-    // identity
-    ticker:   rawSym.toUpperCase(),
-    name:     quote.shortName ?? quote.longName ?? rawSym,
-    fullName: quote.longName  ?? quote.shortName ?? rawSym,
-    market:   tw ? 'TW' : 'US',
-    currency: tw ? 'TWD' : 'USD',
-    sym,
-
-    // price snapshot
-    price, change, pct,
-
-    // fundamentals
-    cap:    fmtMarketCap(quote.marketCap, tw),
-    pe:     quote.trailingPE  ? `${quote.trailingPE.toFixed(1)}倍`          : '—',
-    eps:    quote.trailingEps ? `${sym}${quote.trailingEps.toFixed(2)}`      : '—',
-    beta:   quote.beta        ? `${quote.beta.toFixed(2)}`                   : '—',
-    vol:    fmtVolume(quote.regularMarketVolume,        tw),
-    avgVol: fmtVolume(quote.averageDailyVolume3Month,   tw),
-    hi52:   fix2(quote.fiftyTwoWeekHigh ?? price),
-    lo52:   fix2(quote.fiftyTwoWeekLow  ?? price),
-    div:    quote.trailingAnnualDividendYield
-              ? `${(quote.trailingAnnualDividendYield * 100).toFixed(2)}%`
-              : '—',
-    sector: quote.sector ?? quote.industryDisp ?? '—',
-
-    // K-line history
-    history: candles,
-
-    // Placeholders — AI analysis will provide real values via aiChunk/done
-    verdict: 'HOLD',
-    conf: 50,
-    target: { lo, mid, hi },
-    risks: [],
-    sentimentScore: 50,
-    sentimentLabel: '分析中',
-    analysts: { buy: 0, hold: 0, sell: 0 },
-    summary: '',
-    tags: [],
-    news: [],
-  };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 5. GROQ PROMPT
-// ─────────────────────────────────────────────────────────────────────────────
-
-function buildPrompt(d, yahooSym) {
-  const {
-    ticker, fullName, market, sym,
-    price, change, pct, pe, eps, cap, div, beta, hi52, lo52, vol,
-    history,
-  } = d;
-
-  // 20-day price trend from real K-line data
-  let trendLine = '';
-  if (history.length >= 20) {
-    const sl  = history.slice(-20);
-    const t   = ((sl[sl.length - 1].c - sl[0].c) / sl[0].c * 100).toFixed(1);
-    trendLine = `近 20 交易日漲跌幅：${Number(t) >= 0 ? '+' : ''}${t}%`;
-  }
-
-  const ps = pct    >= 0 ? '+' : '';
-  const cs = change >= 0 ? '+' : '';
-
-  return `你是一位資深股票分析師，熟悉台灣股市（TWSE）及美國股市（NASDAQ/NYSE），\
-擅長基本面分析、技術面分析與風險評估。
-
-請根據以下**真實即時市場數據**（來自 Yahoo Finance），用**繁體中文**撰寫一份完整的投資分析報告。
-
-═══ 股票基本資料 ═══
-代號：${ticker}  (Yahoo Finance: ${yahooSym})
-公司：${fullName}
-市場：${market === 'TW' ? '台灣股市（TWSE）' : '美國股市（NASDAQ/NYSE）'}
-
-═══ 即時行情 ═══
-目前股價：${sym}${price.toLocaleString()}
-今日漲跌：${cs}${sym}${Math.abs(change).toFixed(2)}（${ps}${pct.toFixed(2)}%）
-52 週高／低：${sym}${hi52.toLocaleString()} ／ ${sym}${lo52.toLocaleString()}
-${trendLine}
-
-═══ 基本面指標 ═══
-本益比 (TTM)：${pe}
-每股盈餘 (EPS)：${eps}
-市值：${cap}
-現金殖利率：${div}
-Beta 值：${beta}
-今日成交量：${vol}
-
-═══ 報告格式（請依序輸出）═══
-**【核心評語】** 一句話給出 BUY／HOLD／SELL 建議及最關鍵的理由。
-**【基本面分析】** 列出 2～3 個投資亮點或隱憂。
-**【技術面觀察】** 說明近期趨勢方向、關鍵支撐位與壓力位。
-**【主要風險】** 條列 2～3 個具體風險因子。
-**【12 個月目標價】** 給出「低 / 中 / 高」三個價位區間，並說明依據。
-
-═══ 最後一行（固定格式，供程式解析，請勿修改）═══
-VERDICT: BUY|HOLD|SELL  CONF: 0-100`;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 6. GROQ STREAMING (with mock fallback)
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function streamAnalysis(prompt, ws) {
-  // ── No API key → mock streaming ────────────────────────────────────────────
-  if (!groq) {
-    const msg =
-      '**【Mock 模式】**\n\n' +
-      'Yahoo Finance 真實股票數據已成功取得並回傳至前端。\n\n' +
-      'AI 分析功能目前處於 Mock 模式（尚未設定 `GROQ_API_KEY`）。\n\n' +
-      '請在 Render 的 **Environment Variables** 中加入：\n' +
-      '```\nGROQ_API_KEY = gsk_xxxxxxxxxxxx\n```\n\n' +
-      '重新部署後即可啟用真實 AI 串流分析。\n\n' +
-      'VERDICT: HOLD  CONF: 50';
-    let pos = 0;
-    const timer = setInterval(() => {
-      if (ws.readyState !== ws.OPEN) { clearInterval(timer); return; }
-      const end = Math.min(pos + Math.ceil(Math.random() * 6 + 2), msg.length);
-      safeSend(ws, { type: 'aiChunk', text: msg.slice(pos, end) });
-      pos = end;
-      if (pos >= msg.length) {
-        clearInterval(timer);
-        safeSend(ws, { type: 'done', verdict: 'HOLD', conf: 50 });
-      }
-    }, 25);
-    return;
-  }
-
-  // ── Real Groq streaming ─────────────────────────────────────────────────────
-  try {
-    const stream = await groq.chat.completions.create({
-      model:       GROQ_MODEL,
-      messages:    [{ role: 'user', content: prompt }],
-      stream:      true,
-      max_tokens:  700,
-      temperature: 0.65,
-    });
-
-    let fullText = '';
-
-    for await (const chunk of stream) {
-      // Stop streaming if client disconnected
-      if (ws.readyState !== ws.OPEN) break;
-
-      const text = chunk.choices[0]?.delta?.content ?? '';
-      if (text) {
-        fullText += text;
-        safeSend(ws, { type: 'aiChunk', text });
-      }
-    }
-
-    // Parse VERDICT / CONF from the final AI response
-    const verdictMatch = fullText.match(/VERDICT:\s*(BUY|HOLD|SELL)/i);
-    const confMatch    = fullText.match(/CONF(?:IDENCE)?:\s*(\d+)/i);
-
-    safeSend(ws, {
-      type:    'done',
-      verdict: verdictMatch?.[1]?.toUpperCase() ?? null,
-      conf:    confMatch ? parseInt(confMatch[1], 10) : null,
-    });
-
-  } catch (err) {
-    console.error('[groq] streaming error:', err.message);
-    safeSend(ws, {
-      type:        'error',
-      limitedData: true,
-      message:     `AI 分析服務暫時異常（${err.message.slice(0, 80)}），請稍後再試。`,
-    });
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// UTILITY
-// ─────────────────────────────────────────────────────────────────────────────
-
-function safeSend(ws, obj) {
-  if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// HTTP SERVER  (health check + WebSocket upgrade)
-// ─────────────────────────────────────────────────────────────────────────────
-
-const server = http.createServer((req, res) => {
-  if (req.method === 'GET' && req.url === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    return res.end(JSON.stringify({
-      status:      'ok',
-      connections: wss.clients.size,
-      groq:        !!groq,
-      model:       GROQ_MODEL,
-      ts:          Date.now(),
-    }));
-  }
-  res.writeHead(404);
-  res.end('Not found');
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WEBSOCKET SERVER
-// ─────────────────────────────────────────────────────────────────────────────
-
-const wss = new WebSocketServer({
-  server,
-  verifyClient: () => true,  // allow all origins (GitHub Pages + localhost)
-});
-
-wss.on('connection', (ws, req) => {
-  const ip = (req.headers['x-forwarded-for'] ?? req.socket.remoteAddress ?? 'unknown')
-    .toString().split(',')[0].trim();
-  console.log(`[+] connect   ip=${ip}  total=${wss.clients.size}`);
-
-  // Keep-alive ping every 30s (Render closes idle WS after ~55s)
-  const pingTimer = setInterval(() => {
-    if (ws.readyState === ws.OPEN) ws.ping();
-  }, 30_000);
-
-  ws.on('pong', () => {}); // connection confirmed alive
-
-  // ── Incoming message handler ──────────────────────────────────────────────
-  ws.on('message', async (raw) => {
-    // 1. Parse JSON
-    let msg;
+// 核心：智能台股代碼轉換器 (防禦上市 .TW / 上櫃興櫃 .TWO)
+async function fetchStockWithFallback(symbol) {
+  let cleanSymbol = symbol.trim().toUpperCase();
+  
+  // 如果使用者輸入純數字 (如 2330 或 4939)
+  if (/^\d+$/.test(cleanSymbol)) {
+    // 策略一：先嘗試當作上市股票 (.TW) 查詢
     try {
-      msg = JSON.parse(raw.toString());
-    } catch {
-      return safeSend(ws, { type: 'error', message: '請傳送合法的 JSON 格式。' });
+      const data = await yahooFinance.quote(`${cleanSymbol}.TW`, { lang: 'zh-TW' });
+      if (data && data.regularMarketPrice) return data;
+    } catch (e) {
+      // 上市查不到，自動觸發策略二
     }
 
-    // 2. Validate action
-    if (msg.action !== 'requestAnalysis') {
-      return safeSend(ws, { type: 'error', message: `未知的 action: "${msg.action}"` });
-    }
-
-    const rawSym   = String(msg.symbol ?? '').trim();
-    const yahooSym = toYahooSymbol(rawSym);
-
-    if (!rawSym) {
-      return safeSend(ws, { type: 'error', message: '請提供股票代號，例如 2330 或 AAPL。' });
-    }
-
-    console.log(`[~] analyse   input="${rawSym}"  yahoo="${yahooSym}"  groq=${!!groq}`);
-
-    // 3. Parallel fetch: quote + history
-    let quote, candles;
+    // 策略二：嘗試當作上櫃或興櫃股票 (.TWO) 查詢
     try {
-      [quote, candles] = await Promise.all([
-        fetchQuote(yahooSym),
-        fetchHistory(yahooSym),
-      ]);
-    } catch (err) {
-      console.error(`[yahoo] ${yahooSym}: ${err.message}`);
-      return safeSend(ws, {
-        type:        'error',
-        limitedData: true,
-        message:     err.message,
+      const data = await yahooFinance.quote(`${cleanSymbol}.TWO`, { lang: 'zh-TW' });
+      if (data && data.regularMarketPrice) return data;
+    } catch (e) {
+      // 兩邊都查不到
+    }
+    
+    throw new Error(`找不到股票代號 ${cleanSymbol} 的任何上市櫃或興櫃報價`);
+  }
+
+  // 如果是美股代碼 (如 AAPL, NVDA)，直接查詢
+  return await yahooFinance.quote(cleanSymbol);
+}
+
+// 獲取歷史 K 線數據
+async function fetchHistory(symbol) {
+  const today = new Date();
+  const oneYearAgo = new Date();
+  oneYearAgo.setFullYear(today.getFullYear() - 1);
+
+  try {
+    return await yahooFinance.chart(symbol, {
+      period1: oneYearAgo,
+      period2: today,
+      interval: '1d'
+    });
+  } catch (e) {
+    // 如果對應的後綴查歷史失敗，嘗試用另一種後綴
+    const base = symbol.split('.')[0];
+    const fallbackSuffix = symbol.endsWith('.TW') ? '.TWO' : '.TW';
+    try {
+      return await yahooFinance.chart(`${base}${fallbackSuffix}`, {
+        period1: oneYearAgo,
+        period2: today,
+        interval: '1d'
       });
+    } catch (err) {
+      return { quotes: [] };
     }
+  }
+}
 
-    // 4. Build and push stock snapshot immediately
-    const stockData = buildStockPayload(rawSym, yahooSym, quote, candles);
-    safeSend(ws, { type: 'stockData', data: stockData });
+wss.on('connection', (ws) => {
+  console.log('Client connected via WebSocket');
 
-    // 5. Build prompt from real data and stream AI analysis
-    const prompt = buildPrompt(stockData, yahooSym);
-    await streamAnalysis(prompt, ws);
-  });
+  ws.on('message', async (message) => {
+    try {
+      const payload = JSON.parse(message);
+      
+      if (payload.action === 'requestAnalysis') {
+        const inputSymbol = payload.symbol;
+        const promptType = payload.promptType || 'general';
+        console.log(`Processing Symbol: ${inputSymbol}, Mode: ${promptType}`);
 
-  ws.on('close', (code) => {
-    clearInterval(pingTimer);
-    console.log(`[-] disconnect ip=${ip}  code=${code}  total=${wss.clients.size}`);
-  });
+        // 1. 調用智能轉換器撈取即時數據
+        let rawData;
+        try {
+          rawData = await fetchStockWithFallback(inputSymbol);
+        } catch (err) {
+          ws.send(JSON.stringify({ type: 'stockData', data: null, error: err.message }));
+          return;
+        }
 
-  ws.on('error', (err) => {
-    console.error(`[!] ws error  ip=${ip}  ${err.message}`);
+        // 2. 獲取對應的歷史數據
+        const historyData = await fetchHistory(rawData.symbol);
+        const processedHistory = (historyData.quotes || [])
+          .filter(q => q.date && q.close)
+          .map(q => ({
+            date: new Date(q.date).toISOString().split('T')[0],
+            open: q.open || q.close,
+            high: q.high || q.close,
+            low: q.low || q.close,
+            close: q.close,
+            volume: q.volume || 0
+          }));
+
+        // 3. 興櫃/上櫃零碎欄位防禦性清洗 (確保 null 欄位變回親切的 --- 避免前端當機)
+        const cleanData = {
+          symbol: rawData.symbol,
+          name: rawData.longName || rawData.shortName || rawData.symbol,
+          price: rawData.regularMarketPrice,
+          change: rawData.regularMarketChange || 0,
+          changePercent: rawData.regularMarketChangePercent || 0,
+          marketCap: rawData.marketCap ? `${(rawData.marketCap / 1e12).toFixed(2)} 兆元` : '---',
+          peRatio: rawData.trailingPE ? `${rawData.trailingPE.toFixed(1)} 倍` : '---',
+          eps: rawData.trailingEps ? `${rawData.trailingEps.toFixed(2)} 元` : '---',
+          volume: rawData.regularMarketVolume ? `${(rawData.regularMarketVolume / 1e4).toFixed(1)} 萬張` : '---',
+          high52w: rawData.fiftyTwoWeekHigh ? `NT$${rawData.fiftyTwoWeekHigh}` : '---',
+          low52w: rawData.fiftyTwoWeekLow ? `NT$${rawData.fiftyTwoWeekLow}` : '---',
+          history: processedHistory
+        };
+
+        // 將真數據先甩回前端進行圖表渲染
+        ws.send(JSON.stringify({ type: 'stockData', data: cleanData }));
+
+        // 4. 根據前端按鈕動態客製化 Groq Llama 3.1 專業 Prompt
+        let systemPrompt = `你是一位精通台灣股市與美股的頂級華爾街投資分析師。請全程使用【繁體中文】回答。`;
+        let userPrompt = `請根據以下這檔股票的真實市場數據進行全面評估：
+股票代號: ${cleanData.symbol}
+公司名稱: ${cleanData.name}
+最新收盤價: ${cleanData.price}
+當日漲跌幅: ${cleanData.changePercent}%
+本益比: ${cleanData.peRatio}
+每股盈餘 EPS: ${cleanData.eps}
+請針對使用者的特定需求給出分析結論。`;
+
+        if (promptType === 'fundamental') {
+          userPrompt += `\n【核心任務】：請側重於該公司的【基本面與財務結構】，評估其獲利能力、市值合理性，並給出明確的【核心評語】。`;
+        } else if (promptType === 'technical') {
+          userPrompt += `\n【核心任務】：請側重於該公司的【技術面防守位與量能結構】，分析近期股價波動趨勢，並給出明確的【支撐位與壓力位建議】。`;
+        } else if (promptType === 'outlook') {
+          userPrompt += `\n【核心任務】：請側重於該公司的【下季度展望與產業護城河】，結合目前的總體經濟局勢，給出未來的成長潛力評估。`;
+        } else {
+          userPrompt += `\n【核心任務】：請提供綜合的基本面與市場情緒分析，並給出 Verdict。`;
+        }
+
+        // 調用最新且健康的 llama-3.1-8b-instant 模型進行流暢串流
+        const chatCompletion = await groq.chat.completions.create({
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
+          ],
+          model: 'llama-3.1-8b-instant',
+          stream: true
+        });
+
+        // 逐字噴射大腦思維
+        for await (const chunk of chatCompletion) {
+          const text = chunk.choices[0]?.delta?.content || '';
+          if (text) {
+            ws.send(JSON.stringify({ type: 'aiChunk', text }));
+          }
+        }
+        ws.send(JSON.stringify({ type: 'done' }));
+      }
+    } catch (err) {
+      console.error('WS Error:', err);
+    }
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// BOOT
-// ─────────────────────────────────────────────────────────────────────────────
-
-server.listen(PORT, () => {
-  console.log(`
-╔══════════════════════════════════════════════════════════╗
-║  StockAI Backend  ──  Real Data Mode                     ║
-╠══════════════════════════════════════════════════════════╣
-║  port    ${String(PORT).padEnd(49)}║
-║  yahoo   yahoo-finance2 v3  (live quotes + 1-year K-line)║
-║  groq    ${(groq ? `${GROQ_MODEL}` : 'MOCK — set GROQ_API_KEY to enable').padEnd(49)}║
-╚══════════════════════════════════════════════════════════╝`);
+const PORT = process.env.PORT || 10000;
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Ultimate Backend 3.0 Live on port ${PORT}`);
 });
