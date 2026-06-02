@@ -62,6 +62,9 @@ export default function App() {
           const message = JSON.parse(event.data);
           
           // 1. 抓到真 Yahoo 股價與歷史 K 線數據
+          if (message.type === 'stockData' && !message.data) {
+            setLoadingData(false);
+          }
           if (message.type === 'stockData' && message.data) {
             const fresh = message.data;
             setLoadingData(false);

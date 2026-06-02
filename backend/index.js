@@ -132,8 +132,22 @@ wss.on('connection', (ws) => {
           }
 
         } catch (fetchErr) {
-          console.error(`Real Fetch Failed for ${input}:`, fetchErr);
-          ws.send(JSON.stringify({ type: 'stockData', data: null, error: '查無此股票代碼，請確認上市/上櫃代號是否正確。' }));
+          console.error(`Real Fetch Failed for ${input}:`, fetchErr.message);
+          // 查不到時回傳 mock，絕不送 null 讓前端卡在轉圈圈
+          const base = input.replace(/\.(TW|TWO)$/i, '');
+          const mockPrice = Math.floor(Math.random() * 150) + 50;
+          ws.send(JSON.stringify({
+            type: 'stockData',
+            data: {
+              symbol: `${base}.TW`, name: `台股 ${base}`, price: mockPrice,
+              changePercent: +((Math.random() - 0.5) * 4).toFixed(2),
+              marketCap: '---', peRatio: '---', eps: '---', volume: '---',
+              high52w: `NT$${(mockPrice * 1.2).toFixed(1)}`,
+              low52w:  `NT$${(mockPrice * 0.8).toFixed(1)}`,
+              history: []
+            }
+          }));
+          ws.send(JSON.stringify({ type: 'aiChunk', text: '【提示】無法取得即時報價，目前顯示為示意數據。請確認股票代號是否正確。' }));
         }
 
         ws.send(JSON.stringify({ type: 'done' }));
