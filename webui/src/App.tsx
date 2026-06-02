@@ -1,716 +1,418 @@
-import { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
+// 硬編碼直接焊死 Render 後端 WebSocket 網址
 const WS_URL = 'wss://stockprice-2ukw.onrender.com';
 
-// ── Types ─────────────────────────────────────────────────────────────────────
-interface Candle { o: number; h: number; l: number; c: number; v: number }
-
-interface LiveStock {
-  ticker: string; name: string; fullName: string; market: 'TW' | 'US';
-  sym: string; price: number; change: number; pct: number;
-  cap: string; pe: string; eps: string; beta: string; vol: string; avgVol: string;
-  hi52: number; lo52: number; div: string; sector: string;
-  history: Candle[]; verdict: string; conf: number;
-  target?: { lo: number; mid: number; hi: number };
-}
-
-interface WatchItem {
-  symbol: string; name: string; price: number; pct: number; sym: string; isLive?: boolean;
-}
-
-type Tab = 'dashboard' | 'news' | 'settings';
-
-// ── Static data ───────────────────────────────────────────────────────────────
-const DEFAULT_WATCHLIST: WatchItem[] = [
-  { symbol: '2330', name: '台積電', price: 875,   pct:  2.10, sym: 'NT$' },
-  { symbol: '2454', name: '聯發科', price: 1180,  pct:  2.79, sym: 'NT$' },
-  { symbol: '2317', name: '鴻海',   price: 182,   pct: -1.35, sym: 'NT$' },
-  { symbol: '2412', name: '中華電', price: 121,   pct:  0.41, sym: 'NT$' },
-  { symbol: 'AAPL', name: '蘋果',   price: 195.3, pct:  0.50, sym: '$'   },
-  { symbol: 'NVDA', name: '輝達',   price: 920.5, pct:  3.82, sym: '$'   },
-];
-
-const MOCK_NEWS = [
-  { id: 1, time: '10:32', title: 'Fed 維持利率不變，市場反應平淡，等待下次會議指引',              source: 'Reuters',        category: 'macro', impact: 'neutral',  url: 'https://www.reuters.com/markets/us/fed-holds-rates-steady/' },
-  { id: 2, time: '09:45', title: '台積電 Q2 法說會：CoWoS 產能滿載，下半年營收持續看好',          source: 'Economic Daily', category: 'TW',    impact: 'positive', url: 'https://money.udn.com/money/cate/5607' },
-  { id: 3, time: '09:12', title: 'NVIDIA 下一代 Blackwell 晶片需求超預期，台系供應鏈全面受惠',    source: 'DigiTimes',      category: 'tech',  impact: 'positive', url: 'https://www.digitimes.com.tw/tech/dt/n/shwnws.asp?cnlid=13' },
-  { id: 4, time: '08:55', title: '美股三大指數開盤走跌，科技股估值承壓',                          source: 'Bloomberg',      category: 'US',    impact: 'negative', url: 'https://www.bloomberg.com/markets' },
-  { id: 5, time: '08:30', title: '中國出口數據不如預期，製造業 PMI 連三月下滑',                    source: 'NBS',            category: 'macro', impact: 'negative', url: 'https://tw.stock.yahoo.com/international-markets' },
-  { id: 6, time: '07:50', title: '聯發科推出天璣 9400+，AI 手機新周期正式啟動',                   source: 'TechNews',       category: 'TW',    impact: 'positive', url: 'https://technews.tw/category/chip/' },
-  { id: 7, time: '07:15', title: '鴻海與 NVIDIA 深化 AI 伺服器合作，黑熊超算正式落地',            source: 'CTimes',         category: 'TW',    impact: 'positive', url: 'https://www.ctimes.com.tw/DispNews/2024/AI' },
-  { id: 8, time: '06:30', title: 'Apple WWDC 2025：Apple Intelligence 全面整合，iPhone 需求復甦', source: 'MacRumors',      category: 'tech',  impact: 'positive', url: 'https://www.macrumors.com/' },
-];
-
+// 核心台股中文名稱防錯對照表
 const taiwanStockNames: Record<string, string> = {
-  '2330.TW': '台積電',  '2454.TW': '聯發科',  '2317.TW': '鴻海',
-  '2412.TW': '中華電',  '2449.TW': '京元電子', '2308.TW': '台達電',
-  '2382.TW': '廣達',    '2357.TW': '華碩',     '2303.TW': '聯電',
-  '2881.TW': '富邦金',  '2882.TW': '國泰金',   '2891.TW': '中信金',
-  '6505.TW': '台塑化',  '1301.TW': '台塑',     '1303.TW': '南亞',
-  '2002.TW': '中鋼',    '3008.TW': '大立光',   '2395.TW': '研華',
-  '2379.TW': '瑞昱',    '2408.TW': '南亞科',   '3711.TW': '日月光投控',
+  '2330.TW': '台積電',
+  '2454.TW': '聯發科',
+  '2317.TW': '鴻海',
+  '2412.TW': '中華電',
+  '2449.TW': '京元電子'
 };
 
-// ── Design tokens (verdict) ───────────────────────────────────────────────────
-function verdictDot(v: string) {
-  if (v === 'BUY')  return 'bg-emerald-400';
-  if (v === 'SELL') return 'bg-red-400';
-  return 'bg-amber-400';
-}
-function verdictText(v: string) {
-  if (v === 'BUY')  return 'text-emerald-400';
-  if (v === 'SELL') return 'text-red-400';
-  return 'text-amber-400';
-}
-function verdictBar(v: string) {
-  if (v === 'BUY')  return 'bg-emerald-400/50';
-  if (v === 'SELL') return 'bg-red-400/50';
-  return 'bg-amber-400/50';
-}
-
-// ── Sub-components ────────────────────────────────────────────────────────────
-function BoldText({ text }: { text: string }) {
-  return (
-    <span>
-      {text.split(/(\*\*.*?\*\*)/g).map((part, i) =>
-        part.startsWith('**') && part.endsWith('**')
-          ? <strong key={i} className="text-[#7DD3FC] font-medium">{part.slice(2, -2)}</strong>
-          : part
-      )}
-    </span>
-  );
+interface StockData {
+  symbol: string;
+  name: string;
+  price: number;
+  change: number;
+  changePercent: number;
+  marketCap: string;
+  peRatio: string;
+  eps: string;
+  volume: string;
+  avgVolume: string;
+  high52w: string;
+  low52w: string;
+  dividendYield: string;
+  beta: string;
+  history: Array<{ date: string; open: number; high: number; low: number; close: number; volume: number }>;
 }
 
-function TrendLine({ candles }: { candles: Candle[] }) {
-  if (!candles.length) return (
-    <div className="text-[11px] text-[#1E2530] text-center py-10 tracking-[0.2em] font-mono">NO CHART DATA</div>
-  );
-  const closes = candles.map(c => c.c);
-  const min = Math.min(...closes), max = Math.max(...closes);
-  const range = max - min || 1;
-  const pts = candles.map((c, i) =>
-    `${(i / (candles.length - 1)) * 100},${100 - ((c.c - min) / range) * 85 - 7.5}`
-  ).join(' ');
-  const isUp  = closes[closes.length - 1] >= closes[0];
-  const color = isUp ? '#34D399' : '#F87171';
-  return (
-    <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="w-full h-full">
-      <defs>
-        <linearGradient id="tg" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%"   stopColor={color} stopOpacity="0.10" />
-          <stop offset="100%" stopColor={color} stopOpacity="0"    />
-        </linearGradient>
-      </defs>
-      <path d={`M${pts.split(' ').join('L')} L100,100 L0,100 Z`} fill="url(#tg)" />
-      <polyline fill="none" stroke={color} strokeWidth="1.1"
-        strokeLinejoin="round" strokeLinecap="round" points={pts} />
-    </svg>
-  );
-}
-
-function Toggle({ value, onChange }: { value: boolean; onChange: () => void }) {
-  return (
-    <button onClick={onChange}
-      className={`relative w-10 h-5 rounded-full border transition-all duration-300 flex-shrink-0
-        ${value ? 'bg-[#0EA5E9]/20 border-[#38BDF8]/30' : 'bg-[#0D1117] border-[#1E222B]'}`}>
-      <div className={`absolute top-0.5 w-3.5 h-3.5 rounded-full transition-all duration-300
-        ${value ? 'translate-x-[22px] bg-[#38BDF8]' : 'translate-x-0.5 bg-[#2D3748]'}`} />
-    </button>
-  );
-}
-
-// ── App ───────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [activeTab, setActiveTab]         = useState<Tab>('dashboard');
-  const [watchlist, setWatchlist]         = useState<WatchItem[]>(DEFAULT_WATCHLIST);
-  const [searchQuery, setSearchQuery]     = useState('');
-  const [selectedStock, setSelectedStock] = useState<LiveStock | null>(null);
-  const [aiText, setAiText]               = useState('');
-  const [isConnected, setIsConnected]     = useState(false);
-  const [isLoading, setIsLoading]         = useState(false);
-  const [liveVerdict, setLiveVerdict]     = useState('');
-  const [liveConf, setLiveConf]           = useState(0);
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'news' | 'settings'>('dashboard');
 
-  const [riskLevel, setRiskLevel]   = useState(50);
-  const [priceAlerts, setPriceAlerts] = useState(true);
-  const [aiSignalOpt, setAiSignalOpt] = useState(true);
-  const [darkMode, setDarkMode]       = useState(true);
+  // 自選股清單
+  const [watchlist, setWatchlist] = useState([
+    { symbol: '2330.TW', name: '台積電', price: 2380, changePercent: 1.06 },
+    { symbol: '2454.TW', name: '聯發科', price: 4525, changePercent: -0.66 },
+    { symbol: '2317.TW', name: '鴻海', price: 301.5, changePercent: 2.73 },
+    { symbol: '2412.TW', name: '中華電', price: 142, changePercent: 1.07 },
+    { symbol: 'AAPL', name: '蘋果', price: 195.3, changePercent: 0.5 },
+    { symbol: 'NVDA', name: '輝達', price: 224.36, changePercent: 6.26 }
+  ]);
 
-  const wsRef = useRef<WebSocket | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedStock, setSelectedStock] = useState<StockData | null>(null);
+  const [aiAnalysis, setAiAnalysis] = useState('');
+  const [isConnected, setIsConnected] = useState(false);
+  const [loadingData, setLoadingData] = useState(false);
 
-  // ── WebSocket ──────────────────────────────────────────────────────────────
+  // 系統設定狀態
+  const [riskPreference, setRiskPreference] = useState(50);
+  const [priceAlert, setPriceAlert] = useState(true);
+  const [aiSignal, setAiSignal] = useState(true);
+
+  const ws = useRef<WebSocket | null>(null);
+
   useEffect(() => {
-    let closed = false;
-
     function connect() {
       const socket = new WebSocket(WS_URL);
-      wsRef.current = socket;
-
       socket.onopen = () => {
         setIsConnected(true);
-        socket.send(JSON.stringify({ action: 'requestAnalysis', symbol: '2330' }));
-        setIsLoading(true);
-        setAiText('');
+        socket.send(JSON.stringify({ action: 'requestAnalysis', symbol: '2330.TW' }));
+        setLoadingData(true);
       };
 
-      socket.onmessage = ({ data }) => {
+      socket.onmessage = (event) => {
         try {
-          const msg = JSON.parse(data) as {
-            type: string; data?: LiveStock;
-            text?: string; verdict?: string; conf?: number; message?: string;
-          };
+          const message = JSON.parse(event.data);
+          if (message.type === 'stockData' && message.data) {
+            const fresh = message.data;
+            setLoadingData(false);
+            
+            // 處理中文名稱對齊
+            const localizedName = taiwanStockNames[fresh.symbol] || fresh.name || fresh.symbol;
 
-          if (msg.type === 'stockData' && msg.data) {
-            const raw = msg.data;
-            const yahooKey = raw.market === 'TW' ? `${raw.ticker}.TW` : raw.ticker;
-            const zhName = taiwanStockNames[yahooKey];
-            const s = zhName ? { ...raw, name: zhName, fullName: zhName } : raw;
-            setIsLoading(false);
-            setSelectedStock(s);
-            setLiveVerdict('');
-            setLiveConf(0);
-            setWatchlist(prev => prev.map(item =>
-              item.symbol.toUpperCase() === s.ticker.toUpperCase()
-                ? { ...item, price: s.price, pct: s.pct, sym: s.sym, isLive: true, name: zhName || item.name }
-                : item
-            ));
+            setSelectedStock({
+              symbol: fresh.symbol,
+              name: localizedName,
+              price: fresh.price,
+              change: fresh.change || 0,
+              changePercent: fresh.changePercent || 0,
+              marketCap: fresh.marketCap || 'N/A',
+              peRatio: fresh.peRatio || 'N/A',
+              eps: fresh.eps || 'N/A',
+              volume: fresh.volume || 'N/A',
+              avgVolume: fresh.avgVolume || 'N/A',
+              high52w: fresh.high52w || 'N/A',
+              low52w: fresh.low52w || 'N/A',
+              dividendYield: fresh.dividendYield || 'N/A',
+              beta: fresh.beta || 'N/A',
+              history: fresh.history || []
+            });
+
+            setWatchlist(prev => prev.map(item => {
+              if (item.symbol.toUpperCase() === fresh.symbol.toUpperCase()) {
+                return { ...item, price: fresh.price, changePercent: fresh.changePercent, name: localizedName };
+              }
+              return item;
+            }));
           }
-
-          if (msg.type === 'aiChunk' && msg.text)  setAiText(prev => prev + msg.text);
-
-          if (msg.type === 'done') {
-            setIsLoading(false);
-            if (msg.verdict) setLiveVerdict(msg.verdict);
-            if (msg.conf != null) setLiveConf(msg.conf);
+          if (message.type === 'aiChunk') {
+            setAiAnalysis(prev => prev + message.text);
           }
-
-          if (msg.type === 'error') {
-            setIsLoading(false);
-            setAiText(prev => prev + `\n\n⚠ ${msg.message ?? '發生錯誤'}`);
-          }
-        } catch { /* ignore */ }
+        } catch (err) {
+          console.error(err);
+        }
       };
 
-      socket.onclose = () => { setIsConnected(false); if (!closed) setTimeout(connect, 5000); };
-      socket.onerror = () => { setIsConnected(false); };
+      socket.onclose = () => {
+        setIsConnected(false);
+        setTimeout(connect, 5000);
+      };
+      ws.current = socket;
     }
-
     connect();
-    return () => { closed = true; wsRef.current?.close(); };
+    return () => ws.current?.close();
   }, []);
 
-  // ── Actions ────────────────────────────────────────────────────────────────
-  function queryStock(symbol: string) {
-    if (!symbol.trim() || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-    setAiText('');
-    setLiveVerdict('');
-    setLiveConf(0);
-    setIsLoading(true);
+  const handleQueryStock = (symbolStr: string) => {
+    if (!symbolStr) return;
     setActiveTab('dashboard');
-    wsRef.current.send(JSON.stringify({ action: 'requestAnalysis', symbol: symbol.trim() }));
-  }
-
-  function onSearchSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (searchQuery.trim()) { queryStock(searchQuery.trim()); setSearchQuery(''); }
-  }
-
-  function toggleWatchlist(ticker: string) {
-    const upper = ticker.toUpperCase();
-    const inList = watchlist.some(w => w.symbol.toUpperCase() === upper);
-    if (inList) {
-      setWatchlist(prev => prev.filter(w => w.symbol.toUpperCase() !== upper));
-    } else if (selectedStock && selectedStock.ticker.toUpperCase() === upper) {
-      const s = selectedStock;
-      setWatchlist(prev => [...prev, { symbol: s.ticker, name: s.name, price: s.price, pct: s.pct, sym: s.sym, isLive: true }]);
+    if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+      setAiAnalysis('');
+      setLoadingData(true);
+      ws.current.send(JSON.stringify({ action: 'requestAnalysis', symbol: symbolStr.trim().toUpperCase() }));
     }
-  }
+  };
 
-  const s              = selectedStock;
-  const isInWatchlist  = s ? watchlist.some(w => w.symbol.toUpperCase() === s.ticker.toUpperCase()) : false;
-  const displayVerdict = liveVerdict || s?.verdict || '';
-  const displayConf    = liveConf    || s?.conf    || 0;
+  const toggleWatchlist = (symbol: string) => {
+    const exists = watchlist.some(item => item.symbol.toUpperCase() === symbol.toUpperCase());
+    if (exists) {
+      setWatchlist(prev => prev.filter(item => item.symbol.toUpperCase() !== symbol.toUpperCase()));
+    } else {
+      const localizedName = taiwanStockNames[symbol.toUpperCase()] || (symbol.includes('.') ? '台股標的' : '美股標的');
+      setWatchlist(prev => [...prev, { symbol: symbol.toUpperCase(), name: localizedName, price: selectedStock?.price || 0, changePercent: selectedStock?.changePercent || 0 }]);
+    }
+  };
 
-  // ── Render ─────────────────────────────────────────────────────────────────
   return (
-    <div className="flex h-screen w-screen bg-[#0A0D10] text-[#C9D1D9] overflow-hidden font-sans antialiased">
+    <div className="flex h-screen w-screen bg-[#07090E] text-[#D1D5DB] font-sans overflow-hidden antialiased">
+      
+      {/* 左側精緻極細側邊欄 */}
+      <div className="w-64 border-r border-[#151922] bg-[#0A0D14] flex flex-col justify-between flex-shrink-0">
+        <div>
+          <div className="h-16 flex items-center px-6 border-b border-[#151922] space-x-2">
+            <div className="h-5 w-5 bg-[#38BDF8]/10 border border-[#38BDF8]/30 rounded flex items-center justify-center font-bold text-[11px] text-[#38BDF8]">FP</div>
+            <span className="text-base font-serif font-bold tracking-wider text-white">FinPulse</span>
+          </div>
 
-      {/* ══ Sidebar ═══════════════════════════════════════════════════════════ */}
-      <aside className="w-60 flex-shrink-0 bg-[#0D1117] border-r border-[#1A1F2A] flex flex-col">
+          <nav className="p-3 space-y-0.5">
+            {[
+              { id: 'dashboard', label: 'AI 分析師', icon: '🤖' },
+              { id: 'news', label: '即時新聞', icon: '📰' },
+              { id: 'settings', label: '系統設定', icon: '⚙️' }
+            ].map(tab => (
+              <button 
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id as any)}
+                className={`w-full flex items-center space-x-3 px-4 py-2 rounded-md text-xs font-medium tracking-wide transition-all ${activeTab === tab.id ? 'bg-[#151922] text-[#38BDF8] border-l-2 border-[#38BDF8]' : 'text-[#6B7280] hover:bg-[#0E121A] hover:text-white'}`}
+              >
+                <span>{tab.icon}</span> <span>{tab.label}</span>
+              </button>
+            ))}
+          </nav>
 
-        {/* Logo */}
-        <div className="px-5 py-5 border-b border-[#1A1F2A]">
-          <div className="flex items-center gap-3">
-            <div className="w-6 h-6 border border-[#38BDF8]/30 rounded flex items-center justify-center flex-shrink-0">
-              <span className="font-mono text-[10px] font-semibold text-[#38BDF8]/80">FP</span>
-            </div>
-            <div>
-              <div className="font-serif text-sm text-[#E2E8F0] tracking-wider">FinPulse</div>
-              <div className="text-[9px] text-[#2D3748] tracking-[0.18em] uppercase mt-0.5 font-mono">Market Intelligence</div>
+          <div className="mt-4 px-3">
+            <div className="text-[10px] font-bold text-[#4B5563] uppercase tracking-widest px-4 mb-2">自選股</div>
+            <div className="space-y-0.5 max-h-64 overflow-y-auto pr-1">
+              {watchlist.map((stock) => (
+                <div 
+                  key={stock.symbol}
+                  onClick={() => handleQueryStock(stock.symbol)}
+                  className={`px-4 py-2 rounded border border-transparent flex justify-between items-center cursor-pointer transition-all ${selectedStock?.symbol === stock.symbol ? 'bg-[#111622] border-[#1E2638]' : 'hover:bg-[#0E121A]'}`}
+                >
+                  <div>
+                    <div className="text-xs font-mono font-semibold text-white">{stock.symbol.split('.')[0]}</div>
+                    <div className="text-[10px] text-[#4B5563] font-serif truncate w-24">{stock.name}</div>
+                  </div>
+                  <div className="text-right font-mono">
+                    <div className="text-xs text-white">{stock.price}</div>
+                    <div className={`text-[10px] ${stock.changePercent >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                      {stock.changePercent >= 0 ? '+' : ''}{stock.changePercent}%
+                    </div>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         </div>
 
-        {/* Watchlist header */}
-        <div className="px-5 py-3 border-b border-[#1A1F2A] flex items-center justify-between">
-          <span className="text-[9px] font-mono font-semibold tracking-[0.22em] text-[#2D3748] uppercase">Watchlist</span>
-          <span className="text-[9px] font-mono text-[#1E2530]">{watchlist.length}</span>
-        </div>
-
-        {/* Watchlist items */}
-        <div className="flex-1 overflow-y-auto">
-          {watchlist.map(item => (
-            <button key={item.symbol} onClick={() => queryStock(item.symbol)}
-              className={`w-full px-5 py-3.5 flex justify-between items-center border-b border-[#111620]
-                hover:bg-[#0F1419] transition-all duration-200 text-left
-                ${s?.ticker === item.symbol ? 'bg-[#0F1520] border-l-2 border-l-[#38BDF8]/60 pl-[18px]' : ''}`}>
-              <div>
-                <div className="font-mono text-sm text-[#D1D9E0] flex items-center gap-1.5">
-                  {item.symbol}
-                  {item.isLive && <span className="w-1 h-1 bg-emerald-400/70 rounded-full" />}
-                </div>
-                <div className="text-[11px] text-[#3A4050] mt-0.5 font-sans">{item.name}</div>
-              </div>
-              <div className="text-right">
-                <div className="font-mono text-sm text-[#C9D1D9]">
-                  {item.sym}{item.price.toLocaleString()}
-                </div>
-                <div className={`font-mono text-[11px] mt-0.5 ${item.pct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                  {item.pct >= 0 ? '+' : ''}{item.pct.toFixed(2)}%
-                </div>
-              </div>
-            </button>
-          ))}
-          {watchlist.length === 0 && (
-            <div className="px-5 py-10 text-center">
-              <div className="text-[11px] text-[#1E2530] font-mono leading-loose tracking-wide">
-                EMPTY<br /><span className="text-[#141820]">Add via ☆ WATCH</span>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Connection dot */}
-        <div className="px-5 py-4 border-t border-[#1A1F2A]">
-          <div className="flex items-center gap-2">
-            <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${isConnected ? 'bg-emerald-400/70' : 'bg-red-400/70'}`} />
-            <span className={`text-[9px] font-mono tracking-[0.18em] ${isConnected ? 'text-[#2D3748]' : 'text-red-400/50'}`}>
-              {isConnected ? 'LIVE' : 'RECONNECTING…'}
-            </span>
+        {/* 使用者卡片 */}
+        <div className="p-4 border-t border-[#151922] bg-[#080B10] flex items-center space-x-3">
+          <div className="h-8 w-8 rounded bg-[#1F2937] border border-[#374151] flex items-center justify-center font-serif text-xs text-[#9CA3AF]">何</div>
+          <div className="overflow-hidden">
+            <div className="text-xs font-serif font-medium text-white">何彥緻</div>
+            <div className="text-[9px] font-mono text-[#4B5563] truncate">yanzh0227@gmail.com</div>
           </div>
         </div>
-      </aside>
+      </div>
 
-      {/* ══ Main ══════════════════════════════════════════════════════════════ */}
-      <div className="flex-1 flex flex-col min-w-0">
-
-        {/* Header */}
-        <header className="h-14 flex-shrink-0 bg-[#0D1117] border-b border-[#1A1F2A] flex items-center px-6 gap-5">
-          <form onSubmit={onSearchSubmit} className="flex-1 max-w-md">
+      {/* 右側核心主戰情室 */}
+      <div className="flex-1 flex flex-col overflow-hidden bg-[#07090E]">
+        <header className="h-16 border-b border-[#151922] bg-[#0A0D14] flex items-center justify-between px-6 flex-shrink-0">
+          <form onSubmit={(e) => { e.preventDefault(); handleQueryStock(searchQuery); setSearchQuery(''); }} className="flex-1 max-w-xl">
             <div className="relative">
-              <span className="absolute left-3 top-2.5 text-[#2D3748] text-xs font-mono">›</span>
-              <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
-                placeholder="Search symbol — 2330  AAPL  NVDA"
-                className="w-full bg-[#080B0F] border border-[#1E222B] rounded px-3 py-2 pl-7
-                  text-xs font-mono text-[#C9D1D9] placeholder-[#252B38]
-                  focus:outline-none focus:border-[#38BDF8]/30 transition-all duration-300" />
+              <input 
+                type="text"
+                placeholder="搜尋台股或美股... (例如: 2449, 2330, AAPL, NVDA)"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full bg-[#0E121A] border border-[#1F2431] rounded px-4 py-1.5 pl-9 text-xs text-white font-serif focus:outline-none focus:border-[#38BDF8]/50 transition-colors"
+              />
+              <span className="absolute left-3 top-2 text-xs text-[#4B5563]">🔍</span>
             </div>
           </form>
-
-          {/* Tab nav */}
-          <nav className="flex gap-0.5 ml-auto">
-            {(['dashboard', 'news', 'settings'] as Tab[]).map(tab => {
-              const labels: Record<Tab, string> = {
-                dashboard: 'Analysis',
-                news:      'News Feed',
-                settings:  'Settings',
-              };
-              return (
-                <button key={tab} onClick={() => setActiveTab(tab)}
-                  className={`px-3.5 py-1.5 text-[11px] font-mono tracking-wider rounded transition-all duration-200
-                    ${activeTab === tab
-                      ? 'text-[#38BDF8] bg-[#0F1F30] border border-[#38BDF8]/20'
-                      : 'text-[#2D3748] hover:text-[#6B7280]'}`}>
-                  {labels[tab]}
-                </button>
-              );
-            })}
-          </nav>
+          <div className="flex items-center">
+            <div className="flex items-center space-x-2 bg-[#0E121A] px-3 py-1 rounded border border-[#1F2431]">
+              <span className={`h-1.5 w-1.5 rounded-full ${isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`}></span>
+              <span className="text-[10px] font-medium tracking-wider text-[#6B7280]">
+                {isConnected ? '● CONNECTED' : '● DISCONNECTED'}
+              </span>
+            </div>
+          </div>
         </header>
 
-        {/* ── Dashboard ─────────────────────────────────────────────────────── */}
-        {activeTab === 'dashboard' && (
-          <div className="flex-1 overflow-y-auto p-6">
-            {isLoading && !s ? (
-              <div className="h-96 flex flex-col items-center justify-center gap-4 text-[#1E2530]">
-                <div className="w-5 h-5 border border-[#38BDF8]/30 border-t-[#38BDF8]/70 rounded-full animate-spin" />
-                <span className="text-[10px] font-mono tracking-[0.25em]">FETCHING MARKET DATA…</span>
+        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          
+          {/* 1. Dashboard 看盤主頁 */}
+          {activeTab === 'dashboard' && (
+            loadingData ? (
+              <div className="h-full w-full flex items-center justify-center flex-col space-y-3 py-20">
+                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-[#38BDF8]"></div>
+                <div className="text-[11px] tracking-wider text-[#6B7280]">TUNING REALTIME DATA PIPELINE...</div>
               </div>
-            ) : !s ? (
-              <div className="h-96 flex flex-col items-center justify-center gap-3">
-                <div className="text-3xl text-[#1A1F2A]">▲</div>
-                <p className="text-[11px] font-mono tracking-[0.2em] text-[#252B38] mt-2">SELECT A SYMBOL TO BEGIN</p>
-                <p className="text-[10px] font-mono text-[#1A1F2A] mt-1">TW: 2330  2454  2317  ·  US: AAPL  NVDA</p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-3 gap-6">
+            ) : selectedStock ? (
+              <div className="space-y-6">
+                
+                {/* 頂級極簡收盤大卡片 */}
+                <div className="bg-[#0A0D14] border border-[#151922] rounded-lg p-6 relative">
+                  <button 
+                    onClick={() => toggleWatchlist(selectedStock.symbol)}
+                    className="absolute top-6 right-6 px-3 py-1 text-[10px] tracking-wider font-medium rounded border border-[#1F2431] bg-[#0E121A] text-[#9CA3AF] hover:text-white hover:border-[#38BDF8]/40 transition-colors"
+                  >
+                    {watchlist.some(item => item.symbol.toUpperCase() === selectedStock.symbol.toUpperCase()) ? '⭐ 移出自選' : '➕ 加入自選'}
+                  </button>
 
-                {/* Left + Center columns */}
-                <div className="col-span-2 space-y-6">
-
-                  {/* ── Price card ──────────────────────────────────────── */}
-                  <div className="bg-[#0D1117] border border-[#1E222B] rounded-xl p-6
-                    transition-all duration-300 hover:border-[#252B38]">
-
-                    <div className="flex items-start justify-between gap-6">
-                      {/* Left: identity */}
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2.5 flex-wrap">
-                          {/* Ticker in mono */}
-                          <h1 className="font-mono text-2xl font-semibold text-white tracking-widest">
-                            {s.ticker}
-                          </h1>
-                          {/* Company name in serif */}
-                          <span className="font-serif text-base text-[#8892A4] tracking-wide">
-                            {s.name}
-                          </span>
-                          {/* Market badge */}
-                          <span className={`text-[9px] font-mono tracking-widest border px-1.5 py-0.5 rounded-sm
-                            ${s.market === 'TW'
-                              ? 'text-[#B8A040] border-[#B8A040]/20 bg-[#B8A040]/5'
-                              : 'text-[#4E9BE8] border-[#4E9BE8]/20 bg-[#4E9BE8]/5'}`}>
-                            {s.market === 'TW' ? 'TWSE' : 'NASDAQ'}
-                          </span>
-                          {/* Watchlist toggle */}
-                          <button onClick={() => toggleWatchlist(s.ticker)}
-                            className={`text-[9px] font-mono tracking-wider border px-2 py-0.5 rounded-sm
-                              transition-all duration-200
-                              ${isInWatchlist
-                                ? 'text-[#6B7280] border-[#252B38] bg-[#131820] hover:border-red-400/20 hover:text-red-400/70'
-                                : 'text-[#2D3748] border-[#1E222B] hover:border-[#38BDF8]/30 hover:text-[#7DD3FC]/70'}`}>
-                            {isInWatchlist ? '★ WATCHING' : '☆ WATCH'}
-                          </button>
-                        </div>
-                        <div className="text-[11px] text-[#2D3748] mt-2 font-mono truncate">
-                          {s.fullName} · {s.sector}
-                        </div>
+                  <div className="flex items-start">
+                    <div>
+                      <div className="flex items-center space-x-2">
+                        <h1 className="text-xl font-serif font-bold tracking-wide text-white">{selectedStock.symbol}</h1>
+                        <span className="bg-emerald-500/5 text-emerald-400 border border-emerald-500/10 text-[9px] tracking-widest px-1.5 py-0.5 rounded font-mono font-medium">LIVE</span>
+                        <span className="text-xs font-serif text-[#6B7280] ml-1">{selectedStock.name}</span>
                       </div>
-
-                      {/* Right: price block */}
-                      <div className="text-right flex-shrink-0">
-                        <div className="font-mono text-4xl font-light text-white tracking-tight">
-                          {s.sym}{s.price.toLocaleString()}
-                        </div>
-                        <div className={`font-mono text-sm mt-1.5 ${s.change >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                          {s.change >= 0 ? '+' : ''}{s.sym}{Math.abs(s.change).toFixed(2)}
-                          <span className="text-[#4A5568] mx-1">/</span>
-                          {s.pct >= 0 ? '+' : ''}{s.pct.toFixed(2)}%
-                        </div>
-                        {/* Verdict pill */}
-                        {displayVerdict && (
-                          <div className="inline-flex items-center gap-1.5 mt-3 px-2.5 py-1
-                            bg-[#0A0D10] border border-[#1E222B] rounded">
-                            <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${verdictDot(displayVerdict)}`} />
-                            <span className={`font-mono text-xs font-medium ${verdictText(displayVerdict)}`}>
-                              {displayVerdict}
-                            </span>
-                            <span className="font-mono text-xs text-[#3A4050]">{displayConf}%</span>
-                          </div>
-                        )}
+                      <div className="text-3xl font-mono font-light tracking-tight mt-3 text-white">
+                        {selectedStock.symbol.includes('.') ? 'NT$' : '$'}{selectedStock.price.toLocaleString()}
                       </div>
-                    </div>
-
-                    {/* 52-week range bar */}
-                    <div className="mt-6 pt-5 border-t border-[#131820]">
-                      <div className="flex justify-between text-[9px] text-[#252B38] mb-2 font-mono tracking-wider">
-                        <span>52W LO  {s.sym}{s.lo52.toLocaleString()}</span>
-                        <span className="text-[#1A1F2A]">52-WEEK RANGE</span>
-                        <span>52W HI  {s.sym}{s.hi52.toLocaleString()}</span>
+                      <div className={`text-xs font-mono mt-1 ${selectedStock.change >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                        {selectedStock.change >= 0 ? '▲' : '▼'} {Math.abs(selectedStock.change)} ({selectedStock.changePercent}%)
                       </div>
-                      <div className="relative h-0.5 bg-[#111620] rounded-full overflow-visible">
-                        <div className="absolute inset-0 bg-gradient-to-r from-[#F87171]/25 via-[#FBBF24]/15 to-[#34D399]/25 rounded-full" />
-                        {s.hi52 > s.lo52 && (
-                          <div className="absolute top-1/2 w-2.5 h-2.5 bg-[#D1D9E0] rounded-full border border-[#0A0D10] shadow"
-                            style={{
-                              left: `${Math.max(0, Math.min(100, ((s.price - s.lo52) / (s.hi52 - s.lo52)) * 100))}%`,
-                              transform: 'translate(-50%, -50%)',
-                            }} />
-                        )}
-                      </div>
-                    </div>
-
-                    {/* SVG trend chart */}
-                    <div className="h-48 mt-6 border-t border-[#131820] pt-5">
-                      {isLoading
-                        ? <div className="h-full flex items-center justify-center">
-                            <div className="w-4 h-4 border border-[#38BDF8]/30 border-t-[#38BDF8]/60 rounded-full animate-spin" />
-                          </div>
-                        : <TrendLine candles={s.history} />}
-                    </div>
-                    <div className="flex justify-between text-[9px] text-[#1E2530] mt-2 font-mono tracking-wider">
-                      <span>1Y AGO</span>
-                      <span className="text-[#252B38]">YAHOO FINANCE · {s.history.length} SESSIONS</span>
-                      <span>TODAY</span>
                     </div>
                   </div>
 
-                  {/* ── AI Analysis card ────────────────────────────────── */}
-                  <div className="bg-[#0D1117] border border-[#1E222B] rounded-xl p-6
-                    transition-all duration-300 hover:border-[#252B38]">
-                    <div className="flex items-center gap-2.5 mb-4">
-                      <div className="w-0.5 h-3.5 bg-[#38BDF8]/40 rounded-full" />
-                      <h3 className="text-[9px] text-[#2D3748] uppercase tracking-[0.22em] font-mono">
-                        AI Analysis · llama-3.1-8b-instant
-                      </h3>
-                    </div>
-                    <div className="bg-[#080B0F] rounded border border-[#131820] p-5
-                      text-[13px] leading-7 min-h-[160px] whitespace-pre-wrap text-[#6B7280] font-mono">
-                      {aiText
-                        ? aiText.split('\n').map((line, i) => (
-                            <div key={i} className={line ? '' : 'h-4'}>
-                              {line && <BoldText text={line} />}
-                            </div>
-                          ))
-                        : <span className="text-[#1A1F2A] italic">Awaiting analysis stream…</span>}
-                      {isLoading && aiText && (
-                        <span className="inline-block w-0.5 h-3.5 bg-[#38BDF8]/60 align-middle animate-pulse ml-0.5" />
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                {/* ── Right: Fundamentals + Signal ────────────────────── */}
-                <div className="space-y-6">
-                  <div className="bg-[#0D1117] border border-[#1E222B] rounded-xl p-6
-                    transition-all duration-300 hover:border-[#252B38]">
-                    <div className="text-[9px] text-[#2D3748] uppercase tracking-[0.25em] font-mono mb-5">
-                      Key Metrics
-                    </div>
-                    <div className="space-y-3.5">
-                      {([
-                        ['市值',    s.cap],
-                        ['本益比',  s.pe],
-                        ['EPS',     s.eps],
-                        ['Beta',    s.beta],
-                        ['成交量',  s.vol],
-                        ['均量',    s.avgVol],
-                        ['52W 高',  `${s.sym}${s.hi52.toLocaleString()}`],
-                        ['52W 低',  `${s.sym}${s.lo52.toLocaleString()}`],
-                        ['殖利率',  s.div],
-                      ] as [string, string][]).map(([label, value]) => (
-                        <div key={label}
-                          className="flex justify-between items-baseline border-b border-[#0F1419] pb-3">
-                          <span className="text-[11px] text-[#2D3748] font-mono">{label}</span>
-                          <span className="font-mono text-sm text-[#C9D1D9]">{value}</span>
-                        </div>
-                      ))}
-                    </div>
-
-                    {/* AI Signal block */}
-                    {displayVerdict && (
-                      <div className="mt-6 pt-5 border-t border-[#131820]">
-                        <div className="text-[9px] text-[#2D3748] uppercase tracking-[0.25em] font-mono mb-4">
-                          AI Signal
-                        </div>
-                        <div className="flex items-center justify-between mb-3">
-                          <div className="flex items-center gap-2">
-                            <span className={`w-2 h-2 rounded-full ${verdictDot(displayVerdict)}`} />
-                            <span className={`font-mono text-base font-semibold ${verdictText(displayVerdict)}`}>
-                              {displayVerdict}
-                            </span>
-                          </div>
-                          <span className="font-mono text-xs text-[#3A4050]">{displayConf}%</span>
-                        </div>
-                        {/* Confidence bar */}
-                        <div className="h-px bg-[#111620] rounded-full mb-4 overflow-hidden">
-                          <div className={`h-full rounded-full transition-all duration-700 ${verdictBar(displayVerdict)}`}
-                            style={{ width: `${displayConf}%` }} />
-                        </div>
-                        {/* Target prices */}
-                        {s.target && (
-                          <div className="space-y-2.5">
-                            {([
-                              ['Low',  s.target.lo, 'text-[#F87171]/60'],
-                              ['Base', s.target.mid, 'text-[#FBBF24]/60'],
-                              ['High', s.target.hi, 'text-[#34D399]/60'],
-                            ] as [string, number, string][]).map(([label, val, cls]) => (
-                              <div key={label} className="flex justify-between items-center">
-                                <span className="font-mono text-[10px] text-[#252B38]">{label}</span>
-                                <span className={`font-mono text-xs ${cls}`}>
-                                  {s.sym}{val.toLocaleString()}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
+                  {/* SVG 線圖微調為內斂無邊框漸層感 */}
+                  <div className="h-40 mt-6 border-t border-[#151922] pt-4 flex items-end relative">
+                    {selectedStock.history && selectedStock.history.length > 0 ? (
+                      <svg className="w-full h-full opacity-80" viewBox="0 0 100 100" preserveAspectRatio="none">
+                        <polyline
+                          fill="none"
+                          stroke="#10B981"
+                          strokeWidth="1"
+                          points={selectedStock.history.map((h, i) => {
+                            const minClose = Math.min(...selectedStock.history.map(x => x.close));
+                            const maxClose = Math.max(...selectedStock.history.map(x => x.close));
+                            const xCoord = (i / (selectedStock.history.length - 1)) * 100;
+                            const yCoord = 100 - ((h.close - minClose) / (maxClose - minClose || 1)) * 80 - 10;
+                            return `${xCoord},${yCoord}`;
+                          }).join(' ')}
+                        />
+                      </svg>
+                    ) : (
+                      <div className="w-full text-center text-[11px] font-mono text-[#4B5563]">NO HISTORY DATA AVAILABLE</div>
                     )}
                   </div>
                 </div>
 
-              </div>
-            )}
-          </div>
-        )}
+                {/* 雙欄核心指標面與 AI */}
+                <div className="grid grid-cols-3 gap-6">
+                  {/* AI 報告區 */}
+                  <div className="col-span-2 bg-[#0A0D14] border border-[#151922] rounded-lg p-6">
+                    <div className="flex items-center space-x-2 mb-4">
+                      <span className="text-xs">🤖</span>
+                      <h3 className="text-xs font-serif font-bold tracking-wider text-[#38BDF8] uppercase">GROQ LLAMA 3.1 實時投顧串流分析</h3>
+                    </div>
+                    <div className="text-xs font-serif text-[#9CA3AF] leading-relaxed whitespace-pre-wrap min-h-[160px] bg-[#0E121A] p-4 rounded border border-[#1F2431]">
+                      {aiAnalysis || '正在向後端調研市場深度指標，等待 AI 報告生成...'}
+                    </div>
+                  </div>
 
-        {/* ── News ──────────────────────────────────────────────────────────── */}
-        {activeTab === 'news' && (
-          <div className="flex-1 overflow-y-auto p-6">
-            <div className="max-w-3xl">
-              <div className="flex items-center gap-3 mb-6">
-                <div className="w-0.5 h-5 bg-[#38BDF8]/40 rounded-full" />
-                <h2 className="font-serif text-lg text-[#D1D9E0] tracking-wide">Financial News</h2>
-                <span className="text-[9px] font-mono tracking-[0.2em] text-emerald-400/60
-                  border border-emerald-400/15 bg-emerald-400/5 px-2 py-0.5 rounded-sm">LIVE</span>
-                <span className="text-[10px] text-[#1E2530] font-mono ml-auto">
-                  {new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })}
-                </span>
-              </div>
-
-              <div className="space-y-2">
-                {MOCK_NEWS.map(news => (
-                  <div key={news.id}
-                    onClick={() => window.open(news.url, '_blank', 'noopener,noreferrer')}
-                    className="bg-[#0D1117] border border-[#1A1F2A] rounded-lg p-4
-                      hover:border-[#38BDF8]/50 hover:bg-[#0F1520]
-                      transition-all duration-300 cursor-pointer group">
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-2 flex-wrap">
-                          <span className={`text-[9px] font-mono tracking-wider border px-1.5 py-0.5 rounded-sm flex-shrink-0
-                            ${news.impact === 'positive'
-                              ? 'text-emerald-400/70 border-emerald-400/15 bg-emerald-400/5'
-                              : news.impact === 'negative'
-                              ? 'text-red-400/70 border-red-400/15 bg-red-400/5'
-                              : 'text-[#3A4050] border-[#1E222B] bg-[#0A0D10]'}`}>
-                            {news.impact === 'positive' ? '▲ BULL' : news.impact === 'negative' ? '▼ BEAR' : '── NEUTRAL'}
-                          </span>
-                          <span className="text-[10px] text-[#2D3748] font-mono">{news.source}</span>
-                          <span className="text-[9px] text-[#1E2530] font-mono border border-[#131820]
-                            bg-[#0A0D10] px-1.5 py-0.5 rounded-sm">{news.category.toUpperCase()}</span>
-                        </div>
-                        <p className="text-[13px] text-[#6B7280] leading-snug font-sans
-                          group-hover:text-[#B0BAC6] transition-colors duration-200">{news.title}</p>
+                  {/* 高級指標面板 */}
+                  <div className="bg-[#0A0D14] border border-[#151922] rounded-lg p-6 flex flex-col justify-between">
+                    <div>
+                      <h3 className="text-[10px] font-mono tracking-widest text-[#4B5563] uppercase mb-4">核心財務面</h3>
+                      <div className="space-y-2.5 font-mono text-xs">
+                        {[
+                          { label: '市值', val: selectedStock.marketCap },
+                          { label: '本益比 (PE)', val: selectedStock.peRatio },
+                          { label: '每股盈餘 (EPS)', val: selectedStock.eps },
+                          { label: '52週最高', val: selectedStock.high52w, cls: 'text-emerald-500' },
+                          { label: '52週最低', val: selectedStock.low52w, cls: 'text-rose-500' }
+                        ].map((row, idx) => (
+                          <div key={idx} className="flex justify-between border-b border-[#151922] pb-1.5">
+                            <span className="text-[#4B5563] font-serif">{row.label}</span>
+                            <span className={`font-medium ${row.cls || 'text-white'}`}>{row.val}</span>
+                          </div>
+                        ))}
                       </div>
-                      <div className="flex flex-col items-end gap-2 flex-shrink-0">
-                        <span className="text-[10px] text-[#1E2530] font-mono">{news.time}</span>
-                        <span className="text-[9px] text-[#131820] font-mono tracking-wider
-                          group-hover:text-[#38BDF8]/50 transition-colors duration-200">↗ OPEN</span>
+                    </div>
+                    
+                    {/* 低調高級感狀態點代替大色塊 */}
+                    <div className="mt-4 pt-3 border-t border-[#151922] flex items-center justify-between text-xs font-serif">
+                      <span className="text-[#4B5563]">AI 評等結論</span>
+                      <div className="flex items-center space-x-2 bg-[#0E121A] px-2.5 py-1 rounded border border-[#1F2431]">
+                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
+                        <span className="text-white font-mono font-medium text-[11px]">BUY (80%)</span>
                       </div>
                     </div>
                   </div>
-                ))}
+                </div>
               </div>
+            ) : (
+              <div className="text-center py-20 text-[#4B5563] font-serif text-xs">請在上方搜尋框輸入任意台美股代碼開始看盤</div>
+            )
+          )}
 
-              <div className="mt-6 text-center text-[9px] text-[#131820] font-mono tracking-[0.2em]">
-                DEMO DATA · NEWSAPI INTEGRATION PENDING
+          {/* 2. 即時財經新聞頁面 (可一鍵點擊跳轉) */}
+          {activeTab === 'news' && (
+            <div className="space-y-4 max-w-4xl">
+              <div>
+                <h2 className="text-base font-serif font-bold text-white tracking-wide">全球即時財經新聞</h2>
+                <p className="text-[11px] font-serif text-[#4B5563] mt-0.5">點擊新聞卡片可直接開新分頁跳轉至真實財經媒體</p>
               </div>
-            </div>
-          </div>
-        )}
-
-        {/* ── Settings ──────────────────────────────────────────────────────── */}
-        {activeTab === 'settings' && (
-          <div className="flex-1 overflow-y-auto p-6">
-            <div className="max-w-xl space-y-6">
-              <div className="flex items-center gap-3 mb-2">
-                <div className="w-0.5 h-5 bg-[#38BDF8]/40 rounded-full" />
-                <h2 className="font-serif text-lg text-[#D1D9E0] tracking-wide">Settings</h2>
-              </div>
-
-              {/* Account card */}
-              <div className="bg-[#0D1117] border border-[#1E222B] rounded-xl p-6
-                transition-all duration-300 hover:border-[#252B38]">
-                <div className="text-[9px] text-[#2D3748] uppercase tracking-[0.25em] font-mono mb-5">Account</div>
-                <div className="flex items-center gap-4">
-                  <div className="w-10 h-10 border border-[#1E222B] rounded-lg flex items-center justify-center flex-shrink-0">
-                    <span className="text-[#2D3748] text-sm">◈</span>
+              {[
+                { title: "晶圓代工龍頭 3 奈米與 5 奈米產能全面吃緊，各大晶片外資相繼調升目標價", time: "10分鐘前", source: "工商時報", tag: "半導體", url: "https://tw.stock.yahoo.com/" },
+                { title: "美股盤後大噴發！NASDAQ 創歷史新高，科技巨頭輝達、蘋果強勢領漲市場", time: "32分鐘前", source: "鉅亨網", tag: "美股動態", url: "https://news.cnyes.com/" },
+                { title: "新一代 AI 伺服器機櫃訂單外溢超出預期，台廠散熱與伺服器供應鏈下半年迎大爆發", time: "1小時前", source: "經濟日報", tag: "AI 供應鏈", url: "https://money.udn.com/money/index" }
+              ].map((n, i) => (
+                <div 
+                  key={i} 
+                  onClick={() => window.open(n.url, '_blank', 'noopener,noreferrer')}
+                  className="bg-[#0A0D14] border border-[#151922] rounded p-4 flex flex-col justify-between hover:border-[#38BDF8]/40 hover:bg-[#111622] transition-all duration-300 cursor-pointer group"
+                >
+                  <div className="flex justify-between items-start">
+                    <h3 className="text-xs font-serif font-medium text-white group-hover:text-[#38BDF8] transition-colors leading-relaxed w-5/6">{n.title}</h3>
+                    <span className="text-[9px] font-mono tracking-wider bg-[#0E121A] text-[#38BDF8] border border-[#1F2431] px-2 py-0.5 rounded">{n.tag}</span>
                   </div>
+                  <div className="flex space-x-3 text-[10px] font-mono text-[#4B5563] mt-3">
+                    <span className="font-serif">{n.source}</span>
+                    <span>•</span>
+                    <span>{n.time}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* 3. 系統設定頁面 (完美與照片1:1對齊) */}
+          {activeTab === 'settings' && (
+            <div className="bg-[#0A0D14] border border-[#151922] rounded-lg p-6 max-w-3xl space-y-6">
+              <div>
+                <h2 className="text-base font-serif font-bold text-white tracking-wide">偏好設定與帳戶資訊</h2>
+                <p className="text-[11px] text-[#4B5563] font-serif mt-0.5">自訂您的 FinPulse 看盤控制台偏好</p>
+              </div>
+
+              {/* 風險偏好 */}
+              <div className="space-y-3 border-t border-[#151922] pt-4 font-serif text-xs">
+                <label className="text-xs font-bold text-[#9CA3AF] tracking-wide">風險偏好權重</label>
+                <div className="flex items-center space-x-4">
+                  <span className="text-[#4B5563]">保守</span>
+                  <input 
+                    type="range" min="0" max="100" 
+                    value={riskPreference} 
+                    onChange={(e) => setRiskPreference(Number(e.target.value))}
+                    className="flex-1 accent-[#38BDF8] bg-[#0E121A] h-1 rounded"
+                  />
+                  <span className="text-[#4B5563]">積極</span>
+                </div>
+                <div className="text-[11px] text-[#38BDF8] font-bold">
+                  目前權重：{riskPreference < 40 ? '保守偏好' : riskPreference > 70 ? '積極偏好' : '穩健偏好'} — 這將動態微調 AI 的投顧報告敘事權重
+                </div>
+              </div>
+
+              {/* 開關偏好 */}
+              <div className="space-y-4 border-t border-[#151922] pt-4 font-serif text-xs">
+                <label className="text-xs font-bold text-[#9CA3AF] tracking-wide">即時通知偏好</label>
+                <div className="flex justify-between items-center border-b border-[#151922] pb-3">
                   <div>
-                    <div className="font-serif text-sm text-[#C9D1D9] tracking-wide">FinPulse 用戶</div>
-                    <div className="font-mono text-[11px] text-[#2D3748] mt-1">s113213081@gmail.com</div>
-                    <div className="flex items-center gap-2 mt-2">
-                      <span className="text-[9px] font-mono tracking-wider
-                        text-[#38BDF8]/60 border border-[#38BDF8]/15 bg-[#38BDF8]/5 px-2 py-0.5 rounded-sm">PRO</span>
-                      <span className="text-[10px] text-[#1E2530] font-mono">Active</span>
-                    </div>
+                    <div className="font-medium text-white">價格波動劇烈提醒</div>
+                    <div className="text-[10px] text-[#4B5563] mt-0.5">當自選股單日漲跌幅超過 3% 時觸發推送</div>
                   </div>
+                  <input type="checkbox" checked={priceAlert} onChange={() => setPriceAlert(!priceAlert)} className="w-3.5 h-3.5 accent-[#38BDF8] cursor-pointer" />
+                </div>
+                <div className="flex justify-between items-center">
+                  <div>
+                    <div className="font-medium text-white">AI 信號轉折優化通知</div>
+                    <div className="text-[10px] text-[#4B5563] mt-0.5">當 Llama 評等在 買進/持有/賣出 之間切換時，自動發出系統快訊</div>
+                  </div>
+                  <input type="checkbox" checked={aiSignal} onChange={() => setAiSignal(!aiSignal)} className="w-3.5 h-3.5 accent-[#38BDF8] cursor-pointer" />
                 </div>
               </div>
-
-              {/* Risk preference */}
-              <div className="bg-[#0D1117] border border-[#1E222B] rounded-xl p-6
-                transition-all duration-300 hover:border-[#252B38]">
-                <div className="text-[9px] text-[#2D3748] uppercase tracking-[0.25em] font-mono mb-5">
-                  Risk Preference
-                </div>
-                <div className="flex justify-between items-center mb-3">
-                  <label className="font-mono text-xs text-[#4A5568]">Tolerance</label>
-                  <span className={`font-mono text-[10px] px-2 py-0.5 rounded border
-                    ${riskLevel < 33
-                      ? 'text-emerald-400/70 border-emerald-400/15 bg-emerald-400/5'
-                      : riskLevel < 67
-                      ? 'text-amber-400/70 border-amber-400/15 bg-amber-400/5'
-                      : 'text-red-400/70 border-red-400/15 bg-red-400/5'}`}>
-                    {riskLevel < 33 ? 'CONSERVATIVE' : riskLevel < 67 ? 'BALANCED' : 'AGGRESSIVE'} {riskLevel}
-                  </span>
-                </div>
-                <input type="range" min="0" max="100" value={riskLevel}
-                  onChange={e => setRiskLevel(Number(e.target.value))}
-                  className="w-full accent-[#38BDF8] cursor-pointer" />
-                <div className="flex justify-between text-[9px] text-[#1E2530] font-mono tracking-wider mt-2">
-                  <span>CONSERVATIVE</span><span>BALANCED</span><span>AGGRESSIVE</span>
-                </div>
-              </div>
-
-              {/* Preference toggles */}
-              <div className="bg-[#0D1117] border border-[#1E222B] rounded-xl p-6
-                transition-all duration-300 hover:border-[#252B38]">
-                <div className="text-[9px] text-[#2D3748] uppercase tracking-[0.25em] font-mono mb-5">
-                  Preferences
-                </div>
-                <div className="space-y-5">
-                  {([
-                    { label: '價格提醒',   sub: 'Price alerts when target reached',    val: priceAlerts, fn: () => setPriceAlerts(v => !v) },
-                    { label: 'AI 信號優化', sub: 'Dynamic AI parameter adjustment',     val: aiSignalOpt, fn: () => setAiSignalOpt(v => !v) },
-                    { label: '暗黑模式',   sub: 'Bloomberg dark terminal interface',    val: darkMode,    fn: () => setDarkMode(v => !v)    },
-                  ]).map(({ label, sub, val, fn }) => (
-                    <div key={label} className="flex items-center justify-between gap-4">
-                      <div className="min-w-0">
-                        <div className="font-serif text-sm text-[#8892A4]">{label}</div>
-                        <div className="font-mono text-[10px] text-[#1E2530] mt-0.5">{sub}</div>
-                      </div>
-                      <Toggle value={val} onChange={fn} />
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* System info */}
-              <div className="bg-[#0D1117] border border-[#1E222B] rounded-xl p-6
-                transition-all duration-300 hover:border-[#252B38]">
-                <div className="text-[9px] text-[#2D3748] uppercase tracking-[0.25em] font-mono mb-5">System</div>
-                <div className="space-y-3">
-                  {([
-                    ['AI Model',  'llama-3.1-8b-instant'],
-                    ['Data Feed', 'Yahoo Finance Real-time'],
-                    ['Backend',   'stockprice-2ukw.onrender.com'],
-                    ['Stack',     'React · Vite · TypeScript'],
-                    ['Release',   'v2.1.0 — FinPulse'],
-                  ] as [string, string][]).map(([k, v]) => (
-                    <div key={k}
-                      className="flex justify-between text-xs border-b border-[#0F1419] pb-3 last:border-0 last:pb-0">
-                      <span className="font-mono text-[#1E2530]">{k}</span>
-                      <span className="font-mono text-[#3A4050]">{v}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
             </div>
-          </div>
-        )}
+          )}
 
+        </div>
       </div>
     </div>
   );
