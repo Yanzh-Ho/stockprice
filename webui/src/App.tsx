@@ -3,15 +3,6 @@ import React, { useState, useEffect, useRef } from 'react';
 // 硬編碼直接焊死 Render 後端 WebSocket 網址
 const WS_URL = 'wss://stockprice-2ukw.onrender.com';
 
-// 核心台股中文名稱防錯對照表
-const taiwanStockNames: Record<string, string> = {
-  '2330.TW': '台積電',
-  '2454.TW': '聯發科',
-  '2317.TW': '鴻海',
-  '2412.TW': '中華電',
-  '2449.TW': '京元電子'
-};
-
 interface StockData {
   symbol: string;
   name: string;
@@ -31,37 +22,37 @@ interface StockData {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'news' | 'settings'>('dashboard');
-  const [chartMode, setChartMode] = useState<'price' | 'volume'>('price');
-
-  // 自選股清單
+  // 初始自選股清單（先給預設名字，點擊後會由後端即時刷新數據）
   const [watchlist, setWatchlist] = useState([
-    { symbol: '2330.TW', name: '台積電', price: 2380, changePercent: 1.06 },
-    { symbol: '2454.TW', name: '聯發科', price: 4525, changePercent: -0.66 },
-    { symbol: '2317.TW', name: '鴻海', price: 301.5, changePercent: 2.73 },
-    { symbol: '2412.TW', name: '中華電', price: 142, changePercent: 1.07 },
+    { symbol: '2330.TW', name: '台積電', price: 875, changePercent: 2.1 },
+    { symbol: '2454.TW', name: '聯發科', price: 1180, changePercent: 2.79 },
+    { symbol: '2317.TW', name: '鴻海', price: 182, changePercent: -1.35 },
+    { symbol: '2412.TW', name: '中華電', price: 121, changePercent: 0.41 },
     { symbol: 'AAPL', name: '蘋果', price: 195.3, changePercent: 0.5 },
-    { symbol: 'NVDA', name: '輝達', price: 224.36, changePercent: 6.26 }
+    { symbol: 'NVDA', name: '輝達', price: 920.5, changePercent: 3.82 }
   ]);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedStock, setSelectedStock] = useState<StockData | null>(null);
   const [aiAnalysis, setAiAnalysis] = useState('');
+  const [isConnecting, setIsConnecting] = useState(true);
   const [isConnected, setIsConnected] = useState(false);
   const [loadingData, setLoadingData] = useState(false);
 
-  // 系統設定狀態與總經指標
-  const [riskPreference, setRiskPreference] = useState(50);
-  const [priceAlert, setPriceAlert] = useState(true);
-  const [aiSignal, setAiSignal] = useState(true);
-
   const ws = useRef<WebSocket | null>(null);
 
+  // 初始化 WebSocket 連線
   useEffect(() => {
     function connect() {
+      setIsConnecting(true);
+      console.log('Connecting to Backend:', WS_URL);
       const socket = new WebSocket(WS_URL);
+
       socket.onopen = () => {
         setIsConnected(true);
+        setIsConnecting(false);
+        console.log('WebSocket Connected! 🎉');
+        // 預設第一次上線，自動幫忙撈第一檔 2330 的真資料
         socket.send(JSON.stringify({ action: 'requestAnalysis', symbol: '2330.TW' }));
         setLoadingData(true);
       };
@@ -69,14 +60,16 @@ export default function App() {
       socket.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data);
+          
+          // 1. 抓到真 Yahoo 股價與歷史 K 線數據
           if (message.type === 'stockData' && message.data) {
             const fresh = message.data;
             setLoadingData(false);
-            const localizedName = taiwanStockNames[fresh.symbol] || fresh.name || fresh.symbol;
-
+            
+            // 強制更新當前畫面選中的股票 (包含 52週高低點、PE等所有真欄位)
             setSelectedStock({
               symbol: fresh.symbol,
-              name: localizedName,
+              name: fresh.name || fresh.symbol,
               price: fresh.price,
               change: fresh.change || 0,
               changePercent: fresh.changePercent || 0,
@@ -92,207 +85,159 @@ export default function App() {
               history: fresh.history || []
             });
 
+            // 同步更新左側 Watchlist 裡的即時價格與漲跌
             setWatchlist(prev => prev.map(item => {
-              if (item.symbol.toUpperCase() === fresh.symbol.toUpperCase()) {
-                return { ...item, price: fresh.price, changePercent: fresh.changePercent, name: localizedName };
+              if (item.symbol.toUpperCase() === fresh.symbol.toUpperCase() || 
+                  item.symbol.split('.')[0] === fresh.symbol.split('.')[0]) {
+                return { ...item, price: fresh.price, changePercent: fresh.changePercent };
               }
               return item;
             }));
           }
+
+          // 2. 抓到 Groq 噴回來的動態 AI 串流
           if (message.type === 'aiChunk') {
             setAiAnalysis(prev => prev + message.text);
           }
+
+          // 3. 串流結束
+          if (message.type === 'done') {
+            console.log('AI Analysis Done.');
+          }
         } catch (err) {
-          console.error(err);
+          console.error('Error parsing ws message:', err);
         }
       };
 
       socket.onclose = () => {
         setIsConnected(false);
+        setIsConnecting(false);
+        console.log('WebSocket Disconnected. Reconnecting in 5s...');
         setTimeout(connect, 5000);
       };
+
       ws.current = socket;
     }
+
     connect();
     return () => ws.current?.close();
   }, []);
 
-  const handleQueryStock = (symbolStr: string, customPromptType?: string) => {
+  // 核心功能：向後端請求任意股票代碼（支援搜尋與自選股點擊）
+  const handleQueryStock = (symbolStr: string) => {
     if (!symbolStr) return;
-    setActiveTab('dashboard');
     if (ws.current && ws.current.readyState === WebSocket.OPEN) {
-      setAiAnalysis('');
+      setAiAnalysis(''); // 清空舊分析
       setLoadingData(true);
-      
-      // 如果有點擊快捷提問，打包特定的指令送給後端
-      const payload = {
-        action: 'requestAnalysis',
-        symbol: symbolStr.trim().toUpperCase(),
-        promptType: customPromptType || 'general'
-      };
-      ws.current.send(JSON.stringify(payload));
+      // 直接把代碼送去後端 (後端會透過 toYahooSymbol 自動處理 2330 -> 2330.TW)
+      ws.current.send(JSON.stringify({ action: 'requestAnalysis', symbol: symbolStr.trim() }));
+    } else {
+      alert('後端尚未連線，請稍後再試！');
     }
   };
 
-  const toggleWatchlist = (symbol: string) => {
-    const exists = watchlist.some(item => item.symbol.toUpperCase() === symbol.toUpperCase());
-    if (exists) {
-      setWatchlist(prev => prev.filter(item => item.symbol.toUpperCase() !== symbol.toUpperCase()));
-    } else {
-      const localizedName = taiwanStockNames[symbol.toUpperCase()] || (symbol.includes('.') ? '台股標的' : '美股標的');
-      setWatchlist(prev => [...prev, { symbol: symbol.toUpperCase(), name: localizedName, price: selectedStock?.price || 0, changePercent: selectedStock?.changePercent || 0 }]);
-    }
+  const handleSearchSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    handleQueryStock(searchQuery);
+    setSearchQuery('');
   };
 
   return (
-    <div className="flex h-screen w-screen bg-[#07090E] text-[#D1D5DB] font-sans overflow-hidden antialiased">
-      
-      {/* 左側導航欄 */}
-      <div className="w-64 border-r border-[#151922] bg-[#0A0D14] flex flex-col justify-between flex-shrink-0">
-        <div>
-          <div className="h-16 flex items-center px-6 border-b border-[#151922] space-x-2">
-            <div className="h-5 w-5 bg-[#38BDF8]/10 border border-[#38BDF8]/30 rounded flex items-center justify-center font-bold text-[11px] text-[#38BDF8]">FP</div>
-            <span className="text-base font-serif font-bold tracking-wider text-white">FinPulse</span>
-          </div>
-
-          <nav className="p-3 space-y-0.5">
-            {[
-              { id: 'dashboard', label: 'AI 分析師', icon: '🤖' },
-              { id: 'news', label: '即時新聞', icon: '📰' },
-              { id: 'settings', label: '系統設定', icon: '⚙️' }
-            ].map(tab => (
-              <button 
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id as any)}
-                className={`w-full flex items-center space-x-3 px-4 py-2 rounded-md text-xs font-medium tracking-wide transition-all ${activeTab === tab.id ? 'bg-[#151922] text-[#38BDF8] border-l-2 border-[#38BDF8]' : 'text-[#6B7280] hover:bg-[#0E121A] hover:text-white'}`}
-              >
-                <span>{tab.icon}</span> <span>{tab.label}</span>
-              </button>
-            ))}
-          </nav>
-
-          {/* 自選股清單 */}
-          <div className="mt-4 px-3">
-            <div className="text-[10px] font-bold text-[#4B5563] uppercase tracking-widest px-4 mb-2">自選股</div>
-            <div className="space-y-0.5 max-h-52 overflow-y-auto pr-1">
-              {watchlist.map((stock) => (
-                <div 
-                  key={stock.symbol}
-                  onClick={() => handleQueryStock(stock.symbol)}
-                  className={`px-4 py-2 rounded border border-transparent flex justify-between items-center cursor-pointer transition-all ${selectedStock?.symbol === stock.symbol ? 'bg-[#111622] border-[#1E2638]' : 'hover:bg-[#0E121A]'}`}
-                >
-                  <div>
-                    <div className="text-xs font-mono font-semibold text-white">{stock.symbol.split('.')[0]}</div>
-                    <div className="text-[10px] text-[#4B5563] font-serif truncate w-24">{stock.name}</div>
-                  </div>
-                  <div className="text-right font-mono">
-                    <div className="text-xs text-white">{stock.price}</div>
-                    <div className={`text-[10px] ${stock.changePercent >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                      {stock.changePercent >= 0 ? '+' : ''}{stock.changePercent}%
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* 核心技術含金量功能一：總體經濟指標面板 */}
-          <div className="mt-4 px-3 border-t border-[#151922] pt-4">
-            <div className="text-[10px] font-bold text-[#4B5563] uppercase tracking-widest px-4 mb-2">總體經濟觀測</div>
-            <div className="bg-[#0E121A] rounded p-3 border border-[#1F2431] space-y-2 font-mono text-[11px]">
-              <div className="flex justify-between"><span className="text-[#6B7280]">美聯儲利率</span><span className="text-white font-medium">5.25%</span></div>
-              <div className="flex justify-between"><span className="text-[#6B7280]">美國10Y美債</span><span className="text-white font-medium">4.21%</span></div>
-              <div className="flex justify-between"><span className="text-[#6B7280]">VIX 恐慌指數</span><span className="text-rose-400 font-medium">18.43</span></div>
-            </div>
-          </div>
+    <div className="flex h-screen w-screen bg-[#0B0E14] text-[#E2E8F0] font-sans overflow-hidden">
+      {/* 左側自選股清單 */}
+      <div className="w-80 border-r border-[#1E293B] bg-[#0F131A] flex flex-col">
+        <div className="p-4 border-b border-[#1E293B]">
+          <h2 className="text-sm font-semibold tracking-wider text-[#94A3B8] uppercase">Watchlist 自選股</h2>
         </div>
-
-        <div className="p-4 border-t border-[#151922] bg-[#080B10] flex items-center space-x-3">
-          <div className="h-8 w-8 rounded bg-[#1F2937] border border-[#374151] flex items-center justify-center font-serif text-xs text-[#9CA3AF]">何</div>
-          <div className="overflow-hidden">
-            <div className="text-xs font-serif font-medium text-white">何彥緻</div>
-            <div className="text-[9px] font-mono text-[#4B5563] truncate">yanzh0227@gmail.com</div>
-          </div>
+        <div className="flex-1 overflow-y-auto">
+          {watchlist.map((stock) => (
+            <div 
+              key={stock.symbol}
+              onClick={() => handleQueryStock(stock.symbol)}
+              className={`p-4 flex justify-between items-center border-b border-[#1E293B] cursor-pointer hover:bg-[#1E2530] transition-colors ${selectedStock?.symbol === stock.symbol ? 'bg-[#161F2E]' : ''}`}
+            >
+              <div>
+                <div className="font-bold text-white">{stock.symbol.split('.')[0]}</div>
+                <div className="text-xs text-[#64748B]">{stock.name}</div>
+              </div>
+              <div className="text-right">
+                <div className="font-semibold text-white">NT${stock.price}</div>
+                <div className={`text-xs font-medium ${stock.changePercent >= 0 ? 'text-[#10B981]' : 'text-[#EF4444]'}`}>
+                  {stock.changePercent >= 0 ? '+' : ''}{stock.changePercent}%
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
 
-      {/* 右側核心主戰情室 */}
-      <div className="flex-1 flex flex-col overflow-hidden bg-[#07090E]">
-        <header className="h-16 border-b border-[#151922] bg-[#0A0D14] flex items-center justify-between px-6 flex-shrink-0">
-          <form onSubmit={(e) => { e.preventDefault(); handleQueryStock(searchQuery); setSearchQuery(''); }} className="flex-1 max-w-xl">
+      {/* 右側主要戰情室 */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        {/* 頂部導航與搜尋框 */}
+        <header className="h-16 border-b border-[#1E293B] bg-[#0F131A] flex items-center justify-between px-6 flex-shrink-0">
+          <form onSubmit={handleSearchSubmit} className="flex-1 max-w-xl">
             <div className="relative">
               <input 
                 type="text"
-                placeholder="搜尋台股或美股... (例如: 2449, 2330, AAPL, NVDA)"
+                placeholder="搜尋任意台股或美股代碼... (例如: 2330, 2412, AAPL, NVDA)"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full bg-[#0E121A] border border-[#1F2431] rounded px-4 py-1.5 pl-9 text-xs text-white font-serif focus:outline-none focus:border-[#38BDF8]/50 transition-colors"
+                className="w-full bg-[#161B22] border border-[#30363D] rounded-lg px-4 py-2 pl-10 text-sm text-white focus:outline-none focus:border-[#58A6FF] transition-colors"
               />
-              <span className="absolute left-3 top-2 text-xs text-[#4B5563]">🔍</span>
+              <div className="absolute left-3 top-2.5 text-[#64748B]">🔍</div>
             </div>
           </form>
-          <div className="flex items-center">
-            <div className="flex items-center space-x-2 bg-[#0E121A] px-3 py-1 rounded border border-[#1F2431]">
-              <span className={`h-1.5 w-1.5 rounded-full ${isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`}></span>
-              <span className="text-[10px] font-medium tracking-wider text-[#6B7280]">
-                {isConnected ? '● CONNECTED' : '● DISCONNECTED'}
+          
+          <div className="flex items-center space-x-4">
+            <div className="flex items-center space-x-2 bg-[#161B22] px-3 py-1.5 rounded-full border border-[#30363D]">
+              <span className={`h-2 w-2 rounded-full ${isConnected ? 'bg-[#10B981] animate-pulse' : 'bg-[#EF4444]'}`}></span>
+              <span className="text-xs font-medium text-[#94A3B8]">
+                {isConnected ? '● 已連線後端' : isConnecting ? '連線中...' : '● 斷線重連中'}
               </span>
             </div>
           </div>
         </header>
 
+        {/* 核心主面板 */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
-          
-          {/* 1. Dashboard 看盤主頁 */}
-          {activeTab === 'dashboard' && (
-            loadingData ? (
-              <div className="h-full w-full flex items-center justify-center flex-col space-y-3 py-20">
-                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-[#38BDF8]"></div>
-                <div className="text-[11px] tracking-wider text-[#6B7280]">TUNING REALTIME DATA PIPELINE...</div>
-              </div>
-            ) : selectedStock ? (
-              <div className="space-y-6">
-                
-                {/* 頂級極簡收盤大卡片 */}
-                <div className="bg-[#0A0D14] border border-[#151922] rounded-lg p-6 relative">
-                  {/* 功能三：圖表模式原生切換標籤 */}
-                  <div className="absolute top-6 left-1/2 -translate-x-1/2 bg-[#0E121A] border border-[#1F2431] rounded p-0.5 flex space-x-1 font-mono text-[10px]">
-                    <button onClick={() => setChartMode('price')} className={`px-2.5 py-0.5 rounded transition-all ${chartMode === 'price' ? 'bg-[#151922] text-[#38BDF8] font-bold' : 'text-[#6B7280]'}`}>價格年線</button>
-                    <button onClick={() => setChartMode('volume')} className={`px-2.5 py-0.5 rounded transition-all ${chartMode === 'volume' ? 'bg-[#151922] text-[#38BDF8] font-bold' : 'text-[#6B7280]'}`}>交易量能</button>
-                  </div>
-
-                  <button 
-                    onClick={() => toggleWatchlist(selectedStock.symbol)}
-                    className="absolute top-6 right-6 px-3 py-1 text-[10px] tracking-wider font-medium rounded border border-[#1F2431] bg-[#0E121A] text-[#9CA3AF] hover:text-white hover:border-[#38BDF8]/40 transition-colors"
-                  >
-                    {watchlist.some(item => item.symbol.toUpperCase() === selectedStock.symbol.toUpperCase()) ? '⭐ 移出自選' : '➕ 加入自選'}
-                  </button>
-
-                  <div className="flex items-start">
+          {loadingData ? (
+            <div className="h-full w-full flex items-center justify-center flex-col space-y-3">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#58A6FF]"></div>
+              <div className="text-sm text-[#94A3B8]">正在向 Yahoo Finance 調閱真實即時數據...</div>
+            </div>
+          ) : selectedStock ? (
+            <div className="grid grid-cols-3 gap-6">
+              {/* 左與中：股價與 K 線圖 */}
+              <div className="col-span-2 space-y-6">
+                <div className="bg-[#0F131A] border border-[#1E293B] rounded-xl p-6">
+                  <div className="flex justify-between items-start">
                     <div>
-                      <div className="flex items-center space-x-2">
-                        <h1 className="text-xl font-serif font-bold tracking-wide text-white">{selectedStock.symbol}</h1>
-                        <span className="bg-emerald-500/5 text-emerald-400 border border-emerald-500/10 text-[9px] tracking-widest px-1.5 py-0.5 rounded font-mono font-medium">LIVE</span>
-                        <span className="text-xs font-serif text-[#6B7280] ml-1">{selectedStock.name}</span>
+                      <div className="flex items-center space-x-3">
+                        <h1 className="text-3xl font-extrabold text-white tracking-tight">{selectedStock.symbol}</h1>
+                        <span className="bg-[#1E293B] text-[#94A3B8] text-xs font-semibold px-2.5 py-1 rounded-md">{selectedStock.name}</span>
                       </div>
-                      <div className="text-3xl font-mono font-light tracking-tight mt-3 text-white">
-                        {selectedStock.symbol.includes('.') ? 'NT$' : '$'}{selectedStock.price.toLocaleString()}
+                    </div>
+                    <div className="text-right">
+                      <div className="text-3xl font-black text-white tracking-tight">
+                        {selectedStock.symbol.includes('.') ? 'NT$' : '$'}{selectedStock.price}
                       </div>
-                      <div className={`text-xs font-mono mt-1 ${selectedStock.change >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                      <div className={`text-sm font-bold ${selectedStock.change >= 0 ? 'text-[#10B981]' : 'text-[#EF4444]'}`}>
                         {selectedStock.change >= 0 ? '▲' : '▼'} {Math.abs(selectedStock.change)} ({selectedStock.changePercent}%)
                       </div>
                     </div>
                   </div>
 
-                  {/* SVG 線圖切換渲染模式（手刻成交量柱狀圖 / K線） */}
-                  <div className="h-40 mt-6 border-t border-[#151922] pt-4 flex items-end relative">
+                  {/* 簡易 SVG 趨勢線渲染（全動態歷史 K 線數據） */}
+                  <div className="h-64 mt-6 border-t border-[#1E293B] pt-4 flex items-end justify-between relative">
                     {selectedStock.history && selectedStock.history.length > 0 ? (
-                      chartMode === 'price' ? (
-                        <svg className="w-full h-full opacity-80" viewBox="0 0 100 100" preserveAspectRatio="none">
+                      <>
+                        <div className="absolute top-2 left-2 text-[10px] text-[#475569]">Yahoo Finance 歷史年線走勢</div>
+                        {/* 這裡動態映射後端抓回來的一整年收盤價 */}
+                        <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none">
                           <polyline
                             fill="none"
                             stroke="#10B981"
-                            strokeWidth="1"
+                            strokeWidth="1.5"
                             points={selectedStock.history.map((h, i) => {
                               const minClose = Math.min(...selectedStock.history.map(x => x.close));
                               const maxClose = Math.max(...selectedStock.history.map(x => x.close));
@@ -302,167 +247,69 @@ export default function App() {
                             }).join(' ')}
                           />
                         </svg>
-                      ) : (
-                        // 成交量原生手刻直方柱狀圖
-                        <svg className="w-full h-full opacity-60" viewBox="0 0 100 100" preserveAspectRatio="none">
-                          {selectedStock.history.map((h, i) => {
-                            const maxVol = Math.max(...selectedStock.history.map(x => x.volume || 1));
-                            const barHeight = ((h.volume || 0) / maxVol) * 80;
-                            const xCoord = (i / selectedStock.history.length) * 100;
-                            const barWidth = 100 / selectedStock.history.length * 0.7;
-                            return (
-                              <rect 
-                                key={i}
-                                x={xCoord}
-                                y={100 - barHeight}
-                                width={barWidth}
-                                height={barHeight}
-                                fill={h.close >= h.open ? '#10B981' : '#EF4444'}
-                              />
-                            );
-                          })}
-                        </svg>
-                      )
+                      </>
                     ) : (
-                      <div className="w-full text-center text-[11px] font-mono text-[#4B5563]">NO HISTORY DATA AVAILABLE</div>
+                      <div className="w-full text-center text-xs text-[#64748B]">暫無歷史 K 線圖數據</div>
                     )}
                   </div>
                 </div>
 
-                {/* 雙欄核心指標面與 AI */}
-                <div className="grid grid-cols-3 gap-6">
-                  {/* AI 報告區 */}
-                  <div className="col-span-2 bg-[#0A0D14] border border-[#151922] rounded-lg p-6">
-                    
-                    {/* 功能二：評審快捷提問 Prompt 藥丸按鈕組 */}
-                    <div className="flex items-center justify-between border-b border-[#151922] pb-3 mb-4">
-                      <div className="flex items-center space-x-2">
-                        <span className="text-xs">🤖</span>
-                        <h3 className="text-xs font-serif font-bold tracking-wider text-[#38BDF8] uppercase">GROQ LLAMA 3.1 實時投顧分析</h3>
-                      </div>
-                      <div className="flex space-x-1.5 text-[10px] font-serif">
-                        <button onClick={() => handleQueryStock(selectedStock.symbol, 'fundamental')} className="px-2 py-0.5 border border-[#1F2431] bg-[#0E121A] text-[#9CA3AF] hover:text-[#38BDF8] hover:border-[#38BDF8]/40 rounded transition-colors">📊 基本面深度評估</button>
-                        <button onClick={() => handleQueryStock(selectedStock.symbol, 'technical')} className="px-2 py-0.5 border border-[#1F2431] bg-[#0E121A] text-[#9CA3AF] hover:text-[#38BDF8] hover:border-[#38BDF8]/40 rounded transition-colors">📉 技術面防守位</button>
-                        <button onClick={() => handleQueryStock(selectedStock.symbol, 'outlook')} className="px-2 py-0.5 border border-[#1F2431] bg-[#0E121A] text-[#9CA3AF] hover:text-[#38BDF8] hover:border-[#38BDF8]/40 rounded transition-colors">🔮 下季度展望</button>
-                      </div>
-                    </div>
-
-                    <div className="text-xs font-serif text-[#9CA3AF] leading-relaxed whitespace-pre-wrap min-h-[160px] bg-[#0E121A] p-4 rounded border border-[#1F2431]">
-                      {aiAnalysis || '正在向後端調研市場深度指標，等待 AI 報告生成...'}
-                    </div>
-                  </div>
-
-                  {/* 高級指標面板 */}
-                  <div className="bg-[#0A0D14] border border-[#151922] rounded-lg p-6 flex flex-col justify-between">
-                    <div>
-                      <h3 className="text-[10px] font-mono tracking-widest text-[#4B5563] uppercase mb-4">核心財務面</h3>
-                      <div className="space-y-2.5 font-mono text-xs">
-                        {[
-                          { label: '市值', val: selectedStock.marketCap },
-                          { label: '本益比 (PE)', val: selectedStock.peRatio },
-                          { label: '每股盈餘 (EPS)', val: selectedStock.eps },
-                          { label: '52週最高', val: selectedStock.high52w, cls: 'text-emerald-500' },
-                          { label: '52週最低', val: selectedStock.low52w, cls: 'text-rose-500' }
-                        ].map((row, idx) => (
-                          <div key={idx} className="flex justify-between border-b border-[#151922] pb-1.5">
-                            <span className="text-[#4B5563] font-serif">{row.label}</span>
-                            <span className={`font-medium ${row.cls || 'text-white'}`}>{row.val}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                    
-                    <div className="mt-4 pt-3 border-t border-[#151922] flex items-center justify-between text-xs font-serif">
-                      <span className="text-[#4B5563]">AI 評等結論</span>
-                      <div className="flex items-center space-x-2 bg-[#0E121A] px-2.5 py-1 rounded border border-[#1F2431]">
-                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
-                        <span className="text-white font-mono font-medium text-[11px]">BUY (80%)</span>
-                      </div>
-                    </div>
+                {/* AI 分析報告面板 */}
+                <div className="bg-[#0F131A] border border-[#1E293B] rounded-xl p-6">
+                  <h3 className="text-sm font-bold text-[#58A6FF] uppercase tracking-wider mb-4">🤖 Groq Llama3 實時 AI 投資分析</h3>
+                  <div className="text-sm text-[#E2E8F0] leading-relaxed whitespace-pre-wrap min-h-[150px] bg-[#161B22] p-4 rounded-lg border border-[#30363D]">
+                    {aiAnalysis || '正在等待 AI 梳理市場核心數據並噴發報告...'}
                   </div>
                 </div>
               </div>
-            ) : (
-              <div className="text-center py-20 text-[#4B5563] font-serif text-xs">請在上方搜尋框輸入任意台美股代碼開始看盤</div>
-            )
-          )}
 
-          {/* 2. 即時財經新聞頁面 */}
-          {activeTab === 'news' && (
-            <div className="space-y-4 max-w-4xl">
-              <div>
-                <h2 className="text-base font-serif font-bold text-white tracking-wide">全球即時財經新聞</h2>
-                <p className="text-[11px] font-serif text-[#4B5563] mt-0.5">點擊新聞卡片可直接開新分頁跳轉至真實財經媒體</p>
-              </div>
-              {[
-                { title: "晶圓代工龍頭 3 奈米與 5 奈米產能全面吃緊，各大晶片外資相繼調升目標價", time: "10分鐘前", source: "工商時報", tag: "半導體", url: "https://tw.stock.yahoo.com/" },
-                { title: "美股盤後大噴發！NASDAQ 創歷史新高，科技巨頭輝達、蘋果強勢領漲市場", time: "32分鐘前", source: "鉅亨網", tag: "美股動態", url: "https://news.cnyes.com/" },
-                { title: "新一代 AI 伺服器機櫃訂單外溢超出預期，台廠散熱與伺服器供應鏈下半年迎大爆發", time: "1小時前", source: "經濟日報", tag: "AI 供應鏈", url: "https://money.udn.com/money/index" }
-              ].map((n, i) => (
-                <div 
-                  key={i} 
-                  onClick={() => window.open(n.url, '_blank', 'noopener,noreferrer')}
-                  className="bg-[#0A0D14] border border-[#151922] rounded p-4 flex flex-col justify-between hover:border-[#38BDF8]/40 hover:bg-[#111622] transition-all duration-300 cursor-pointer group"
-                >
-                  <div className="flex justify-between items-start">
-                    <h3 className="text-xs font-serif font-medium text-white group-hover:text-[#38BDF8] transition-colors leading-relaxed w-5/6">{n.title}</h3>
-                    <span className="text-[9px] font-mono tracking-wider bg-[#0E121A] text-[#38BDF8] border border-[#1F2431] px-2 py-0.5 rounded">{n.tag}</span>
+              {/* 右側：真實關鍵財務指標面板 */}
+              <div className="bg-[#0F131A] border border-[#1E293B] rounded-xl p-6 flex flex-col justify-between">
+                <div>
+                  <h3 className="text-sm font-bold text-[#94A3B8] uppercase tracking-wider mb-4">關鍵核心指標</h3>
+                  <div className="space-y-4">
+                    <div className="flex justify-between border-b border-[#1E293B] pb-2 text-sm">
+                      <span className="text-[#64748B]">市值</span>
+                      <span className="font-semibold text-white">{selectedStock.marketCap}</span>
+                    </div>
+                    <div className="flex justify-between border-b border-[#1E293B] pb-2 text-sm">
+                      <span className="text-[#64748B]">本益比 (PE)</span>
+                      <span className="font-semibold text-white">{selectedStock.peRatio}</span>
+                    </div>
+                    <div className="flex justify-between border-b border-[#1E293B] pb-2 text-sm">
+                      <span className="text-[#64748B]">每股盈餘 (EPS)</span>
+                      <span className="font-semibold text-white">{selectedStock.eps}</span>
+                    </div>
+                    <div className="flex justify-between border-b border-[#1E293B] pb-2 text-sm">
+                      <span className="text-[#64748B]">成交量</span>
+                      <span className="font-semibold text-white">{selectedStock.volume}</span>
+                    </div>
+                    <div className="flex justify-between border-b border-[#1E293B] pb-2 text-sm">
+                      <span className="text-[#64748B]">52週最高</span>
+                      <span className="font-semibold text-[#10B981]">{selectedStock.high52w}</span>
+                    </div>
+                    <div className="flex justify-between border-b border-[#1E293B] pb-2 text-sm">
+                      <span className="text-[#64748B]">52週最低</span>
+                      <span className="font-semibold text-[#EF4444]">{selectedStock.low52w}</span>
+                    </div>
+                    <div className="flex justify-between border-b border-[#1E293B] pb-2 text-sm">
+                      <span className="text-[#64748B]">殖利率</span>
+                      <span className="font-semibold text-white">{selectedStock.dividendYield}</span>
+                    </div>
+                    <div className="flex justify-between border-b border-[#1E293B] pb-2 text-sm">
+                      <span className="text-[#64748B]">Beta 值</span>
+                      <span className="font-semibold text-white">{selectedStock.beta}</span>
+                    </div>
                   </div>
-                  <div className="flex space-x-3 text-[10px] font-mono text-[#4B5563] mt-3">
-                    <span className="font-serif">{n.source}</span>
-                    <span>•</span>
-                    <span>{n.time}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* 3. 系統設定頁面 */}
-          {activeTab === 'settings' && (
-            <div className="bg-[#0A0D14] border border-[#151922] rounded-lg p-6 max-w-3xl space-y-6">
-              <div>
-                <h2 className="text-base font-serif font-bold text-white tracking-wide">偏好設定與帳戶資訊</h2>
-                <p className="text-[11px] text-[#4B5563] font-serif mt-0.5">自訂您的 FinPulse 看盤控制台偏好</p>
-              </div>
-
-              <div className="space-y-3 border-t border-[#151922] pt-4 font-serif text-xs">
-                <label className="text-xs font-bold text-[#9CA3AF] tracking-wide">風險偏好權重</label>
-                <div className="flex items-center space-x-4">
-                  <span className="text-[#4B5563]">保守</span>
-                  <input 
-                    type="range" min="0" max="100" 
-                    value={riskPreference} 
-                    onChange={(e) => setRiskPreference(Number(e.target.value))}
-                    className="flex-1 accent-[#38BDF8] bg-[#0E121A] h-1 rounded"
-                  />
-                  <span className="text-[#4B5563]">積極</span>
-                </div>
-                <div className="text-[11px] text-[#38BDF8] font-bold">
-                  目前權重：{riskPreference < 40 ? '保守偏好' : riskPreference > 70 ? '積極偏好' : '穩健偏好'} — 這將動態微調 AI 的投顧報告敘事權重
-                </div>
-              </div>
-
-              <div className="space-y-4 border-t border-[#151922] pt-4 font-serif text-xs">
-                <label className="text-xs font-bold text-[#9CA3AF] tracking-wide">即時通知偏好</label>
-                <div className="flex justify-between items-center border-b border-[#151922] pb-3">
-                  <div>
-                    <div className="font-medium text-white">價格波動劇烈提醒</div>
-                    <div className="text-[10px] text-[#4B5563] mt-0.5">當自選股單日漲跌幅超過 3% 時觸發推送</div>
-                  </div>
-                  <input type="checkbox" checked={priceAlert} onChange={() => setPriceAlert(!priceAlert)} className="w-3.5 h-3.5 accent-[#38BDF8] cursor-pointer" />
-                </div>
-                <div className="flex justify-between items-center">
-                  <div>
-                    <div className="font-medium text-white">AI 信號轉折優化通知</div>
-                    <div className="text-[10px] text-[#4B5563] mt-0.5">當 Llama 評等在 買進/持有/賣出 之間切換時，自動發出系統快訊</div>
-                  </div>
-                  <input type="checkbox" checked={aiSignal} onChange={() => setAiSignal(!aiSignal)} className="w-3.5 h-3.5 accent-[#38BDF8] cursor-pointer" />
                 </div>
               </div>
             </div>
+          ) : (
+            <div className="h-full w-full flex items-center justify-center flex-col text-[#64748B] space-y-2">
+              <span className="text-4xl">📈</span>
+              <p>請在上方搜尋框輸入任意代碼，或從左側自選股中挑選一檔股票開始看盤</p>
+            </div>
           )}
-
         </div>
       </div>
     </div>
