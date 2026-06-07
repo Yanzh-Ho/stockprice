@@ -12,6 +12,7 @@ interface LiveStock {
   hi52: number; lo52: number; div: string; sector: string;
   history: Candle[]; verdict: string; conf: number;
   target?: { lo: number; mid: number; hi: number };
+  targetPrice?: string;
 }
 
 interface WatchItem {
@@ -191,6 +192,9 @@ export default function App() {
                   hi52:     parseNT(d.high52w),
                   lo52:     parseNT(d.low52w),
                   div:      d.dividendYield || '---',
+                  targetPrice: d.targetPrice != null
+                    ? `${isTW ? 'NT$' : '$'}${(+d.targetPrice).toFixed(isTW ? 0 : 2)}`
+                    : '---',
                   sector:   '---',
                   history:  (d.history || []).map((h: any) => ({
                     o: h.open  || h.close || 0,
@@ -537,6 +541,7 @@ export default function App() {
                         ['52W 高',  `${s.sym}${s.hi52.toLocaleString()}`],
                         ['52W 低',  `${s.sym}${s.lo52.toLocaleString()}`],
                         ['殖利率',  s.div],
+                        ['法人目標價', s.targetPrice || '---'],
                       ] as [string, string][]).map(([label, value]) => (
                         <div key={label}
                           className="flex justify-between items-baseline border-b border-[#0F1419] pb-3">

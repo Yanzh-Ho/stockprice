@@ -92,6 +92,26 @@ async function fetchQuoteDetail(symbol) {
 }
 
 
+// 抓取法人目標價（Yahoo Finance v11 quoteSummary financialData）
+async function fetchFinancialData(symbol) {
+  for (const host of ['query1', 'query2']) {
+    try {
+      const url = `https://${host}.finance.yahoo.com/v11/finance/quoteSummary/${encodeURIComponent(symbol)}?modules=financialData`;
+      const res = await fetch(url, { headers: YF_HEADERS, signal: AbortSignal.timeout(8000) });
+      if (!res.ok) continue;
+      const json = await res.json();
+      const fd = json?.quoteSummary?.result?.[0]?.financialData;
+      if (!fd) continue;
+      return {
+        targetPrice: fd.targetMeanPrice?.raw  ?? null,
+        targetHigh:  fd.targetHighPrice?.raw  ?? null,
+        targetLow:   fd.targetLowPrice?.raw   ?? null,
+      };
+    } catch(e) {}
+  }
+  return {};
+}
+
 // 台股純數字 → 先試 .TWO 再試 .TW；美股直打
 async function resolveSymbol(input) {
   const clean = input.trim().toUpperCase();
@@ -126,11 +146,13 @@ wss.on('connection', (ws) => {
 
       let stockData;
       try {
-        const base   = await resolveSymbol(input);
-        const detail = await fetchQuoteDetail(base.symbol).catch(() => ({}));
-        // _high52w/_low52w 是 detail 的備用值，只在 v8 沒拿到時使用
+        const base = await resolveSymbol(input);
+        const [detail, financial] = await Promise.all([
+          fetchQuoteDetail(base.symbol).catch(() => ({})),
+          fetchFinancialData(base.symbol).catch(() => ({})),
+        ]);
         const { _high52w, _low52w, ...cleanDetail } = detail;
-        stockData = { ...base, ...cleanDetail };
+        stockData = { ...base, ...cleanDetail, ...financial };
         if (!stockData.history?.length) stockData.history = mockHistory(stockData.price);
         if (!stockData.marketCap) stockData.marketCap = '---';
         if (!stockData.peRatio)   stockData.peRatio   = '---';
@@ -155,10 +177,33 @@ wss.on('connection', (ws) => {
 
       // Groq AI 串流
       try {
+        const targetNum = stockData.targetPrice != null ? Number(stockData.targetPrice) : null;
+        const targetPct = targetNum != null ? ((targetNum - stockData.price) / stockData.price * 100).toFixed(1) : null;
+        const targetStr = targetNum != null
+          ? `${targetNum}（潛在空間 ${Number(targetPct) >= 0 ? '+' : ''}${targetPct}%）`
+          : '暫無資料';
+        const userPrompt = `股票：${stockData.name}（${stockData.symbol}）現價 ${stockData.price}，今日 ${stockData.changePercent >= 0 ? '+' : ''}${stockData.changePercent}%
+基本面：市值 ${stockData.marketCap || '---'} ｜ 本益比 ${stockData.peRatio || '---'} ｜ EPS ${stockData.eps || '---'} ｜ Beta ${stockData.beta || '---'} ｜ 殖利率 ${stockData.dividendYield || '---'}
+法人目標均價：${targetStr}
+
+請嚴格按以下格式輸出（全繁體中文，共 200 字以內）：
+
+【🔥 核心評語】
+• [最犀利的一句話核心判斷]
+• [最關鍵的催化劑或風險]
+
+【📊 基本面與目標價】
+• 現價 vs 法人目標價：${stockData.price} → ${targetStr}
+• [本益比 / EPS / 殖利率簡評]
+
+【📉 技術與籌碼面】
+• [近期趨勢與均線判讀]
+• [進場建議 / 停損點]`;
+
         const stream = await groq.chat.completions.create({
           messages: [
-            { role: 'system', content: '你是精通台股與美股的華爾街資深分析師，請全程用繁體中文回答。' },
-            { role: 'user', content: `分析：${stockData.name} (${stockData.symbol})，現價 ${stockData.price} 元，今日 ${stockData.changePercent}%。請給出簡短犀利的操盤建議（150字內）。` }
+            { role: 'system', content: '你是精通台股與美股的資深分析師，請全程用繁體中文，嚴格按用戶要求的格式與區塊輸出。' },
+            { role: 'user', content: userPrompt }
           ],
           model: 'llama-3.1-8b-instant',
           stream: true

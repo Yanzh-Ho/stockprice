@@ -272,16 +272,73 @@ const PORTFOLIO = [
 ];
 
 const AI_RESPONSES: Record<string, string> = {
-  '2330': '**台積電（2330.TW）— 買進 · 信心指數 84%**\n\n台積電掌控全球超過 60% 的先進晶圓代工產能，是 AI 晶片供應鏈的核心骨幹。外資持續買超，法人看好 3 奈米製程放量帶動 EPS 上修。2 奈米製程 2025 年底試產，有望推動下一波估值擴張。\n\n**目標價：** NT$970（較現價上漲 10.9%）\n**主要風險：** 台灣海峽地緣政治局勢\n\n建議作為台股核心持股，長期持有。',
-  '2454': '**聯發科（2454.TW）— 買進 · 信心指數 76%**\n\n聯發科天璣 9400 成功打入三星旗艦機，AI 手機晶片市佔率快速提升。衛星通訊、車用與 IoT 為中期新成長動能。現金殖利率達 3.5%，估值相對輝達等美股 AI 股票合理。\n\n**目標價：** NT$1,320（較現價上漲 11.9%）\n**主要風險：** 中國客戶佔比偏高（約 55%），中美貿易戰風險',
-  '2317': '**鴻海（2317.TW）— 持有 · 信心指數 63%**\n\n鴻海是全球最大電子代工廠，蘋果供應鏈是核心收入來源。殖利率超過 4% 支撐下檔，但電動車新業務仍在燒錢階段，短期難以顯著貢獻獲利。\n\n**目標價：** NT$200（較現價上漲 9.9%）\n**建議：** 等待電動車業務明確轉虧為盈訊號，或股價回測 NT$165 以下再加碼。',
-  '2412': '**中華電（2412.TW）— 持有 · 信心指數 60%**\n\n中華電信股息穩定，殖利率近 5%，是台股「存股」首選之一。但 5G 投資回收期漫長，成長性有限。\n\n**目標價：** NT$128（較現價上漲 5.8%）\n**適合：** 低風險、重視現金流的長期投資人',
-  '2882': '**國泰金（2882.TW）— 持有 · 信心指數 58%**\n\n國泰金為台灣最大金控，壽險資產規模龐大，對利率與匯率高度敏感。Fed 降息周期若確立，壽險資產評價有望改善，股價存在補漲空間。殖利率約 4.2%。\n\n**目標價：** NT$68（較現價上漲 9.7%）\n**主要風險：** 台幣升值壓縮海外投資收益',
-  'TSM':  '**台積電 ADR（TSM）— 買進 · 信心指數 78%**\n\n台積電掌控全球超過 60% 的先進晶圓代工產能，是 AI 晶片供應鏈的核心骨幹。輝達與蘋果的訂單能見度延伸至 2026 年。3 奈米製程放量推動平均售價上升。\n\n**目標價：** $205（較現價上漲 10.6%）\n**主要風險：** 台灣海峽地緣政治局勢',
-  'TSLA': '**特斯拉（TSLA）— 持有 · 信心指數 62%**\n\n特斯拉維持電動車品牌領導地位，擁有真實的軟體護城河（FSD、超充網路）。但近期基本面承壓——比亞迪競爭加劇、毛利縮減，且以 62 倍本益比來看，股價已反映大量 Robotaxi/Optimus 的潛力溢價。\n\n**目標價：** $255（較現價上漲 2.5%）\n**建議：** 等待 $200–$220 的更佳進場點。',
-  'NVDA': '**輝達（NVDA）— 強力買進 · 信心指數 85%**\n\n輝達是本時代最核心的 AI 基礎設施投資標的。H100/H200 持續供不應求；Blackwell（B200）量產已啟動。資料中心營收年增逾 400%。CUDA 生態系形成極高轉換成本，AMD 與 Intel 至今未能突破。毛利率擴張至約 78%。\n\n**目標價：** $1,050（較現價上漲 14%）\n**注意：** 68 倍本益比下容錯空間有限——請依風險承受度控制倉位。',
-  'AAPL': '**蘋果（AAPL）— 持有 · 信心指數 71%**\n\n蘋果擁有超過 20 億台裝置的生態系，加上約 1,000 億美元年化規模的服務業務，獲利基礎穩定且高度可預測。Apple Intelligence 有望在 2025 年下半年催化下一波 iPhone 換機潮。\n\n**目標價：** $220（較現價上漲 12.6%）\n**主要風險：** 中國市場營收敞口（約佔總營收 18%）',
-  'MSFT': '**微軟（MSFT）— 買進 · 信心指數 80%**\n\n微軟在企業 AI 與雲端的交叉點具有獨特優勢。Azure 再加速成長至 29%。面向超過 4 億 Office 用戶的 Copilot（每月 30 美元/用戶）是早期階段的巨大營收機會。企業分發護城河無可匹敵。\n\n**目標價：** $480（較現價上漲 16%）\n**催化劑：** Azure OpenAI 持續滲透與 Copilot 席次擴張',
+  '2330': '▌ 市場環境與近期動態\n台積電掌控全球超過 60% 的先進晶圓代工產能，是 AI 晶片供應鏈核心骨幹。輝達與蘋果訂單能見度延伸至 2026 年，外資連續 8 日買超。2 奈米製程良率超出市場預期，法說會細節即將揭露，市場情緒偏多。\n\n▌ 技術面訊號\n週線站上 20 週均線，RSI 62 偏強未過熱，成交量放大配合上攻。短期壓力區 NT$920–945（52W 高點），支撐在 NT$840（月線）。MACD 黃金交叉成立，中期上行動能完整。\n\n▌ 主要風險因子\n• 台灣海峽地緣政治風險（尾端但影響最大）\n• 客戶集中度偏高（蘋果＋輝達合計佔 50% 營收）\n• 美元兌台幣匯率敞口，每升值 1% 稀釋 EPS 約 0.4%\n• 半導體景氣循環下行風險（CoWoS 擴產後供需平衡點）\n\n▌ 投資建議摘要\n**目標價：NT$970**（+10.9%）｜**停損點：NT$820**｜**倉位建議：核心持股，建議 15–20%**',
+  '2454': '▌ 市場環境與近期動態\n聯發科天璣 9400 成功拿下三星 Galaxy S25 系列訂單，AI 手機晶片市佔率快速提升。衛星通訊模組及車用 SoC 為新成長引擎，Q2 營收季增 18% 超越市場預期，法人上調全年 EPS 預估。\n\n▌ 技術面訊號\n突破 NT$1,200 關鍵壓力，RSI 70 接近短線過熱，量能放大確認突破有效。短期支撐在 NT$1,150（前壓撐），壓力看 NT$1,280（52W 高）。\n\n▌ 主要風險因子\n• 中國客戶佔比偏高（約 55%），中美貿易戰升溫直接衝擊\n• 高通競爭壓力持續，旗艦機市佔爭奪激烈\n• AI PC 及 IoT 新市場滲透率仍低，變現能力待驗證\n• 手機晶片市場整體成長趨緩\n\n▌ 投資建議摘要\n**目標價：NT$1,320**（+11.9%）｜**停損點：NT$1,050**｜**倉位建議：成長配置，建議 8–12%**',
+  '2317': '▌ 市場環境與近期動態\n鴻海印度廠持續擴產加速蘋果供應鏈去中化，AI 伺服器業務成長動能浮現。Foxtron 電動車在台訂單突破千輛，但蘋果 AI 功能推遲使 Q3 訂單能見度趨保守。\n\n▌ 技術面訊號\n股價在 NT$175–185 整理，低於 20/60 日均線壓制。RSI 48 中性偏弱，週線 MACD 翻轉訊號初現，量能未能明顯放大，需觀察突破確認。\n\n▌ 主要風險因子\n• 蘋果供應鏈集中度過高（佔 45% 營收）\n• 電動車新業務仍在虧損燒錢階段\n• 中美貿易戰轉單效應不確定\n• 代工業務毛利率長期偏低（約 6%）\n\n▌ 投資建議摘要\n**目標價：NT$200**（+9.9%）｜**停損點：NT$165**｜**倉位建議：等待電動車業務明確轉虧為盈訊號，或回測 NT$165 再加碼**',
+  '2412': '▌ 市場環境與近期動態\n中華電信 5G 企業專網簽約台積電，打入半導體廠域。AI 客服平台上線年省逾億元成本，NCC 放寬資費管制有助獲利改善。電信業整體進入現金流穩定成熟期。\n\n▌ 技術面訊號\n股價於 NT$115–125 防禦型區間整理，Beta 值僅 0.32 波動極低。RSI 50 中性，殖利率 4.85% 提供下檔保護。缺乏明顯技術突破動力，適合存股策略。\n\n▌ 主要風險因子\n• 5G 投資回收期漫長，資本支出壓力持續\n• 民營電信競爭侵蝕用戶 ARPU\n• 國際業務成長有限，難以擴大營收規模\n• 高殖利率但成長性天花板明確\n\n▌ 投資建議摘要\n**目標價：NT$128**（+5.8%）｜**停損點：NT$110**｜**倉位建議：防禦型配息持股，建議 5–8%**',
+  '2882': '▌ 市場環境與近期動態\nFed 降息預期升溫，金融股殖利率吸引力浮現，壽險資產評價有望改善。國泰人壽 AI 核保系統上線，理賠速度提升 40%，長期降低成本結構。台幣升值壓力仍為近期隱憂。\n\n▌ 技術面訊號\n股價於 NT$58–62 區間整理，靠近下方支撐。RSI 45 中性偏弱，月線乖離率轉正。若 Fed 啟動降息循環，股價存在明顯補漲空間至 NT$68–72。\n\n▌ 主要風險因子\n• 台幣升值壓縮海外投資收益（每升值 1% 影響 EPS 約 3%）\n• 利率環境轉變衝擊壽險資產配置\n• 股市大幅修正影響基金管理費收入\n• 金融業法規趨嚴，資本適足率要求提升\n\n▌ 投資建議摘要\n**目標價：NT$68**（+9.7%）｜**停損點：NT$54**｜**倉位建議：配息型持股，建議 5–8%**',
+  'TSM':  '▌ 市場環境與近期動態\n台積電 ADR 掌控全球超過 60% 的先進晶圓代工產能，是 AI 晶片供應鏈核心。輝達 Blackwell 晶片出貨超前進度，蘋果 N3E 製程確認用於 iPhone 17 系列，月營收年增 40% 強勁。\n\n▌ 技術面訊號\n股價鞏固於 $185 附近，低於 52W 高點 $193.50。RSI 65 健康，站上 50/200 日均線，技術結構偏多。支撐在 $170（60DMA），壓力看 $193（52W 高）。\n\n▌ 主要風險因子\n• 台灣海峽地緣政治風險（最大尾端風險）\n• 蘋果＋輝達客戶集中度偏高（合計佔 50% 營收）\n• 美元兌台幣匯率敞口影響 ADR 折溢價\n• 半導體景氣循環下行風險\n\n▌ 投資建議摘要\n**目標價：$205**（+10.6%）｜**停損點：$158**｜**倉位建議：核心持股，建議 12–18%**',
+  'TSLA': '▌ 市場環境與近期動態\n特斯拉 Q2 交付量不如預期，比亞迪在歐洲連續兩個月銷量超越特斯拉。FSD 第 13 版城市駕駛能力大幅提升，Robotaxi 商業化時程仍不確定。CEO 爭議持續影響品牌形象。\n\n▌ 技術面訊號\n股價跌破 200 日均線，RSI 42 中性偏弱，$220 為關鍵支撐（跌破轉弱），壓力在 $270（60DMA）。短期呈現高波動震盪格局，Beta 2.31 需嚴格控制倉位。\n\n▌ 主要風險因子\n• 比亞迪電動車競爭持續加劇，歐洲市場份額流失\n• 62 倍本益比已反映大量 Robotaxi/Optimus 未來潛力\n• 持續降價壓縮毛利，毛利率下行壓力明顯\n• CEO 爭議導致品牌形象受損，消費者好感度下滑\n\n▌ 投資建議摘要\n**目標價：$255**（+2.5%）｜**停損點：$190**｜**倉位建議：等待 $200–220 更佳進場點，高 Beta 控制在 5% 以內**',
+  'NVDA': '▌ 市場環境與近期動態\n輝達 Blackwell 晶片出貨進度超前，微軟為 Azure AI 訂購 40 萬顆 H200 GPU。資料中心營收年增逾 400%，CUDA 生態系護城河使 AMD 與 Intel 至今難以突破。毛利率擴張至約 78%。\n\n▌ 技術面訊號\n股價逼近 ATH $974，RSI 78 偏高略過熱，短線需消化漲幅。突破前高後支撐在 $840（前壓撐），動能指標持續偏強。長線趨勢完整，短線波動風險高。\n\n▌ 主要風險因子\n• 68 倍本益比估值偏高，容錯空間有限\n• 中國出口管制限制 A800/H800 晶片銷售\n• AMD MI300X 在雲端超大規模業者中逐漸獲採用\n• AI 資本支出週期正常化後需求可能放緩\n\n▌ 投資建議摘要\n**目標價：$1,050**（+14.1%）｜**停損點：$780**｜**倉位建議：AI 基礎設施核心持股，建議 10–15%**',
+  'AAPL': '▌ 市場環境與近期動態\nApple Intelligence 獲歐盟監管批准正式推出，iPhone 17 Pro 預購創下 iPhone 15 以來最強表現。服務業務年化規模約 1,000 億美元，獲利基礎穩定可預測。美司法部 App Store 反壟斷案進入取證階段。\n\n▌ 技術面訊號\n股價於 $190 附近築底，低於 52W 高點 $237.23。RSI 48 中性，200 日均線提供支撐。若 iPhone 換機潮確認，上看 $220–237 區間。缺乏短期催化劑時，股價可能持續區間整理。\n\n▌ 主要風險因子\n• 中國市場營收敞口（佔總營收 18%），中美關係惡化直接衝擊\n• iPhone 換機週期持續拉長，升級需求不如預期\n• Apple Intelligence 變現前景不確定，訂閱模式尚未成形\n• App Store 反壟斷監管審查可能影響服務業務獲利率\n\n▌ 投資建議摘要\n**目標價：$220**（+12.6%）｜**停損點：$168**｜**倉位建議：防禦型科技核心持股，建議 8–12%**',
+  'MSFT': '▌ 市場環境與近期動態\nAzure 受 AI 需求帶動再加速至 29% 成長，Microsoft 365 Copilot 企業席次突破 100 萬。面向超過 4 億 Office 用戶的 AI 訂閱（$30/用戶/月）是龐大變現機會。企業分發護城河無可匹敵。\n\n▌ 技術面訊號\n中期強勢上升趨勢完整，支撐在 $400（整數關卡兼月線），RSI 65 健康。站上所有關鍵均線，動能指標偏強。短線壓力在 $468（52W 高），突破後看 $500。\n\n▌ 主要風險因子\n• Azure 成長動能放緩風險（從 29% 回落）\n• 對 OpenAI 的高度依賴，合作條款存在不確定性\n• 企業 IT 支出週期波動，宏觀不確定性影響雲端預算\n• 反壟斷監管審查持續（搜尋、辦公室軟體市場）\n\n▌ 投資建議摘要\n**目標價：$480**（+16.3%）｜**停損點：$355**｜**倉位建議：雲端 AI 核心持股，建議 12–18%**',
+};
+
+const INSTITUTIONAL_TARGETS: Record<string, Array<{ broker: string; rating: string; target: number; date: string }>> = {
+  '2330': [
+    { broker: '摩根大通', rating: '增持', target: 1000, date: '2025/06/02' },
+    { broker: '高盛', rating: '買進', target: 970, date: '2025/05/28' },
+    { broker: '花旗', rating: '中立', target: 920, date: '2025/05/20' },
+    { broker: '瑞銀', rating: '買進', target: 990, date: '2025/06/01' },
+  ],
+  '2454': [
+    { broker: '摩根士丹利', rating: '增持', target: 1350, date: '2025/05/30' },
+    { broker: '美銀美林', rating: '買進', target: 1280, date: '2025/06/01' },
+    { broker: '瑞信', rating: '中立', target: 1100, date: '2025/05/18' },
+  ],
+  '2317': [
+    { broker: '元大投顧', rating: '買進', target: 210, date: '2025/05/30' },
+    { broker: '凱基投顧', rating: '持有', target: 195, date: '2025/05/25' },
+    { broker: '摩根大通', rating: '中立', target: 188, date: '2025/06/02' },
+  ],
+  '2412': [
+    { broker: '富邦投顧', rating: '買進', target: 135, date: '2025/05/20' },
+    { broker: '兆豐投顧', rating: '中立', target: 130, date: '2025/05/28' },
+    { broker: '凱基投顧', rating: '持有', target: 125, date: '2025/06/01' },
+  ],
+  '2882': [
+    { broker: '台灣工銀', rating: '買進', target: 70, date: '2025/06/01' },
+    { broker: '日盛投顧', rating: '買進', target: 72, date: '2025/05/28' },
+    { broker: '元富投顧', rating: '持有', target: 65, date: '2025/05/22' },
+  ],
+  'TSM': [
+    { broker: 'J.P. Morgan', rating: 'Overweight', target: 210, date: '2025/06/02' },
+    { broker: 'BofA', rating: 'Buy', target: 215, date: '2025/05/30' },
+    { broker: 'Goldman Sachs', rating: 'Buy', target: 205, date: '2025/05/28' },
+    { broker: 'Citi', rating: 'Buy', target: 200, date: '2025/06/01' },
+  ],
+  'TSLA': [
+    { broker: 'Wedbush', rating: 'Outperform', target: 315, date: '2025/05/28' },
+    { broker: 'Morgan Stanley', rating: 'Equal Weight', target: 250, date: '2025/05/20' },
+    { broker: 'Goldman Sachs', rating: 'Neutral', target: 230, date: '2025/06/01' },
+  ],
+  'NVDA': [
+    { broker: 'J.P. Morgan', rating: 'Overweight', target: 1150, date: '2025/06/02' },
+    { broker: 'Morgan Stanley', rating: 'Overweight', target: 1100, date: '2025/06/03' },
+    { broker: 'Citi', rating: 'Buy', target: 1050, date: '2025/05/30' },
+    { broker: 'BofA', rating: 'Buy', target: 1000, date: '2025/06/01' },
+  ],
+  'AAPL': [
+    { broker: 'J.P. Morgan', rating: 'Overweight', target: 230, date: '2025/06/02' },
+    { broker: 'Goldman Sachs', rating: 'Buy', target: 225, date: '2025/05/28' },
+    { broker: 'BofA', rating: 'Neutral', target: 200, date: '2025/06/01' },
+  ],
+  'MSFT': [
+    { broker: 'J.P. Morgan', rating: 'Overweight', target: 510, date: '2025/06/02' },
+    { broker: 'Morgan Stanley', rating: 'Overweight', target: 500, date: '2025/06/03' },
+    { broker: 'Goldman Sachs', rating: 'Buy', target: 490, date: '2025/06/01' },
+    { broker: 'Citi', rating: 'Buy', target: 470, date: '2025/05/28' },
+  ],
 };
 
 const SUGGESTIONS = [
@@ -403,18 +460,42 @@ function ChartSVG({ history, W = 600, H = 160, accent = '#4f8ef7', gradId = 'g0'
 // ── AIText ────────────────────────────────────────────────────────────────────
 
 function AIText({ text }: { text: string }) {
+  const renderInline = (line: string) =>
+    line.split(/(\*\*.*?\*\*)/g).map((p, j) =>
+      p.startsWith('**') && p.endsWith('**')
+        ? <strong key={j} style={{ color: '#4f8ef7', fontWeight: 600 }}>{p.slice(2, -2)}</strong>
+        : <span key={j}>{p}</span>
+    );
+
   return (
     <div style={{ fontSize: 12 }}>
       {text.split('\n').map((line, i) => {
-        if (!line.trim()) return <div key={i} style={{ height: 5 }} />;
-        const parts = line.split(/(\*\*.*?\*\*)/g);
+        if (!line.trim()) return <div key={i} style={{ height: 6 }} />;
+
+        if (line.startsWith('▌ ')) {
+          return (
+            <div key={i} style={{
+              fontSize: 10, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase' as const,
+              color: '#4f8ef7', borderLeft: '2px solid #4f8ef7', paddingLeft: 7,
+              margin: '12px 0 5px', lineHeight: 1.4,
+            }}>
+              {line.slice(2)}
+            </div>
+          );
+        }
+
+        if (line.startsWith('• ')) {
+          return (
+            <div key={i} style={{ display: 'flex', gap: 7, marginBottom: 4, lineHeight: 1.6, alignItems: 'flex-start', color: '#8fa8c8' }}>
+              <span style={{ color: '#ff6060', flexShrink: 0, fontSize: 10, marginTop: 3 }}>▲</span>
+              <span>{renderInline(line.slice(2))}</span>
+            </div>
+          );
+        }
+
         return (
-          <div key={i} style={{ lineHeight: 1.65, margin: '1px 0' }}>
-            {parts.map((p, j) =>
-              p.startsWith('**') && p.endsWith('**')
-                ? <strong key={j} style={{ color: '#4f8ef7' }}>{p.slice(2, -2)}</strong>
-                : p
-            )}
+          <div key={i} style={{ lineHeight: 1.65, margin: '1px 0', color: '#8fa8c8' }}>
+            {renderInline(line)}
           </div>
         );
       })}
@@ -524,7 +605,9 @@ function AnalysisPanel({ stock }: { stock: Stock | null }) {
             <div style={{ height: '100%', width: `${stock.conf}%`, background: `linear-gradient(90deg,#4f8ef780,${vc(stock.verdict)})`, borderRadius: 2, transition: 'width .6s ease' }} />
           </div>
         </div>
-        <p style={{ fontSize: 12, color: '#4a6890', lineHeight: 1.72, margin: '0 0 14px' }}>{stock.summary}</p>
+        <div style={{ marginBottom: 14 }}>
+          <AIText text={AI_RESPONSES[stock.ticker] ?? stock.summary} />
+        </div>
         <div style={{ fontSize: 11, color: '#4a6890', marginBottom: 7 }}>12 月目標價</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
           <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11 }}>{stock.sym}{stock.target.lo}</span>
@@ -544,7 +627,7 @@ function AnalysisPanel({ stock }: { stock: Stock | null }) {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
         <div style={{ ...card, marginBottom: 0 }}>
           <div style={stLabel}>關鍵指標</div>
-          {[['市值', stock.cap], ['本益比', stock.pe], ['每股盈餘 (TTM)', stock.eps], ['Beta 值', stock.beta], ['成交量', stock.vol], ['均均成交量', stock.avgVol], ['52週高點', `${stock.sym}${stock.hi52.toLocaleString()}`], ['52週低點', `${stock.sym}${stock.lo52.toLocaleString()}`], ['殖利率', stock.div]].map(([k, v]) => (
+          {[['市值', stock.cap], ['本益比', stock.pe], ['每股盈餘 (TTM)', stock.eps], ['Beta 值', stock.beta], ['成交量', stock.vol], ['均量', stock.avgVol], ['52週高點', `${stock.sym}${stock.hi52.toLocaleString()}`], ['52週低點', `${stock.sym}${stock.lo52.toLocaleString()}`], ['殖利率', stock.div]].map(([k, v]) => (
             <div key={k} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid rgba(79,142,247,.1)', fontSize: 12 }}>
               <span style={{ color: '#4a6890' }}>{k}</span>
               <span style={{ fontFamily: "'JetBrains Mono',monospace", fontWeight: 500 }}>{v}</span>
@@ -578,6 +661,32 @@ function AnalysisPanel({ stock }: { stock: Stock | null }) {
           </div>
         </div>
       </div>
+
+      {/* Institutional Targets */}
+      {INSTITUTIONAL_TARGETS[stock.ticker] && (
+        <div style={card}>
+          <div style={stLabel}>法人目標價</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 0.9fr 0.9fr 0.8fr 0.9fr', gap: 6, padding: '0 0 8px', borderBottom: '1px solid rgba(79,142,247,.15)', marginBottom: 6, fontSize: 10, fontWeight: 600, letterSpacing: '.06em', textTransform: 'uppercase' as const, color: '#4a6890' }}>
+            <span>券商</span><span>評等</span><span style={{ textAlign: 'right' }}>目標價</span><span style={{ textAlign: 'center' }}>較現價</span><span style={{ textAlign: 'right' }}>更新日期</span>
+          </div>
+          {INSTITUTIONAL_TARGETS[stock.ticker].map((t, i) => {
+            const diff = (t.target - stock.price) / stock.price * 100;
+            const isBull = t.rating === '買進' || t.rating === 'Buy' || t.rating === 'Overweight' || t.rating === 'Outperform' || t.rating === '增持';
+            const isBear = t.rating === '賣出' || t.rating === 'Sell' || t.rating === 'Underweight' || t.rating === 'Underperform';
+            const ratingCol = isBull ? '#00d98b' : isBear ? '#ff4060' : '#ffd666';
+            const rows = INSTITUTIONAL_TARGETS[stock.ticker];
+            return (
+              <div key={i} style={{ display: 'grid', gridTemplateColumns: '1.1fr 0.9fr 0.9fr 0.8fr 0.9fr', gap: 6, padding: '7px 0', borderBottom: i < rows.length - 1 ? '1px solid rgba(79,142,247,.08)' : 'none', fontSize: 12, alignItems: 'center' }}>
+                <span style={{ color: '#ccd8f5', fontWeight: 500, fontSize: 11 }}>{t.broker}</span>
+                <span style={{ fontSize: 9, fontWeight: 700, color: ratingCol, background: ratingCol + '18', border: `1px solid ${ratingCol}40`, padding: '2px 5px', borderRadius: 3, display: 'inline-block', letterSpacing: '.03em', whiteSpace: 'nowrap' as const, overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.rating}</span>
+                <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, textAlign: 'right' }}>{stock.sym}{t.target.toLocaleString()}</span>
+                <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: diff >= 0 ? '#00d98b' : '#ff4060', textAlign: 'center', fontWeight: 600 }}>{diff >= 0 ? '+' : ''}{diff.toFixed(1)}%</span>
+                <span style={{ fontSize: 10, color: '#4a6890', textAlign: 'right' }}>{t.date}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
