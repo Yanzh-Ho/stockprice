@@ -65,7 +65,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedStock, setSelectedStock] = useState<StockData | null>(null);
   const [aiAnalysis, setAiAnalysis] = useState('');
-  const [aiTargetPrice, setAiTargetPrice] = useState('');
+  const [aiMetrics, setAiMetrics] = useState<Record<string, string>>({});
   const [isConnected, setIsConnected] = useState(false);
   const [loadingData, setLoadingData] = useState(false);
   const ws = useRef<WebSocket | null>(null);
@@ -105,9 +105,16 @@ export default function App() {
           if (message.type === 'aiChunk') {
             setAiAnalysis(prev => {
               const next = prev + message.text;
-              // 即時 parse 第一行的 AI 估算目標價
-              const m = next.match(/AI估算目標價[：:]\s*((?:NT\$|\$)[\d,]+(?:\.[\d]{0,2})?)/);
-              if (m) setAiTargetPrice(m[1]);
+              // Parse METRICS line once it's complete
+              const metricsLine = next.match(/^METRICS\|([^\n]+)/m);
+              if (metricsLine) {
+                const parsed: Record<string, string> = {};
+                metricsLine[1].split('|').forEach(pair => {
+                  const [k, v] = pair.split(':');
+                  if (k && v) parsed[k.trim()] = v.trim();
+                });
+                setAiMetrics(parsed);
+              }
               return next;
             });
           }
@@ -124,7 +131,7 @@ export default function App() {
     if (!symbolStr) return;
     if (ws.current && ws.current.readyState === WebSocket.OPEN) {
       setAiAnalysis('');
-      setAiTargetPrice('');
+      setAiMetrics({});
       setLoadingData(true);
       ws.current.send(JSON.stringify({ action: 'requestAnalysis', symbol: symbolStr.trim().toUpperCase() }));
     }
@@ -190,7 +197,9 @@ export default function App() {
                 <div className="flex-1 bg-[#0A0D14] border border-[#151922] rounded-lg p-6">
                   <h3 className="text-xs font-serif font-bold text-[#38BDF8] mb-4">AI ANALYSIS • LLAMA-3.1-8B</h3>
                   <div className="text-xs font-serif text-[#9CA3AF] leading-relaxed whitespace-pre-wrap">
-                    {aiAnalysis || '正在深入挖掘基本面與目標價，生成報告中...'}
+                    {aiAnalysis
+                      ? aiAnalysis.replace(/^METRICS\|[^\n]*\n?/m, '').trimStart()
+                      : '正在深入挖掘基本面與目標價，生成報告中...'}
                   </div>
                 </div>
               </div>
@@ -198,29 +207,36 @@ export default function App() {
               <div className="w-72 bg-[#0A0D14] border border-[#151922] rounded-lg p-6 flex flex-col">
                 <h3 className="text-[10px] font-mono tracking-widest text-[#4B5563] mb-4">KEY METRICS</h3>
                 <div className="space-y-3 font-mono text-xs">
-                  {[
-                    { label: '市值', val: selectedStock.marketCap },
-                    { label: '本益比', val: selectedStock.peRatio },
-                    { label: 'EPS', val: selectedStock.eps },
-                    { label: 'Beta', val: selectedStock.beta },
-                    { label: '殖利率', val: selectedStock.dividendYield },
-                    { label: '成交量', val: selectedStock.volume },
-                    { label: '均量', val: selectedStock.avgVolume },
-                    { label: '52W 高', val: selectedStock.high52w },
-                    { label: '52W 低', val: selectedStock.low52w }
-                  ].map((row, idx) => (
-                    <div key={idx} className="flex justify-between border-b border-[#151922] pb-2">
-                      <span className="text-[#4B5563] font-serif">{row.label}</span>
-                      <span className="text-white">{row.val}</span>
-                    </div>
-                  ))}
+                  {([
+                    { label: '市值',   real: selectedStock.marketCap,    ai: aiMetrics['市值'] },
+                    { label: '本益比', real: selectedStock.peRatio,       ai: aiMetrics['PE'] },
+                    { label: 'EPS',    real: selectedStock.eps,           ai: aiMetrics['EPS'] },
+                    { label: 'Beta',   real: selectedStock.beta,          ai: aiMetrics['Beta'] },
+                    { label: '殖利率', real: selectedStock.dividendYield, ai: aiMetrics['殖利率'] },
+                    { label: '成交量', real: selectedStock.volume,        ai: undefined },
+                    { label: '均量',   real: selectedStock.avgVolume,     ai: aiMetrics['均量'] },
+                    { label: '52W 高', real: selectedStock.high52w,       ai: undefined },
+                    { label: '52W 低', real: selectedStock.low52w,        ai: undefined },
+                  ] as { label: string; real: string; ai: string | undefined }[]).map((row, idx) => {
+                    const isAi = row.real === '---' && !!row.ai;
+                    const val  = isAi ? row.ai! : (row.real || '---');
+                    return (
+                      <div key={idx} className="flex justify-between border-b border-[#151922] pb-2 items-baseline">
+                        <span className="text-[#4B5563] font-serif flex items-center gap-1">
+                          {row.label}
+                          {isAi && <span className="text-[8px] text-[#38BDF8]/40 border border-[#38BDF8]/15 px-0.5 rounded">AI</span>}
+                        </span>
+                        <span className={isAi ? 'text-[#9CA3AF]' : 'text-white'}>{val}</span>
+                      </div>
+                    );
+                  })}
                   <div className="flex justify-between pb-2 pt-3 bg-[#111622] px-2 -mx-2 rounded">
                     <span className="text-[#38BDF8] font-serif font-bold flex items-center gap-1.5">
                       AI 估算目標價
                       <span className="text-[9px] font-mono text-[#38BDF8]/50 border border-[#38BDF8]/20 px-1 rounded">AI</span>
                     </span>
                     <span className="text-[#38BDF8] font-bold font-mono">
-                      {aiTargetPrice || (aiAnalysis ? '解析中...' : '分析中...')}
+                      {aiMetrics['目標價'] || (aiAnalysis ? '解析中...' : '分析中...')}
                     </span>
                   </div>
                 </div>

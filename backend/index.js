@@ -144,26 +144,26 @@ wss.on('connection', (ws) => {
         const userPrompt =
 `分析標的: ${stockData.name} (${stockData.symbol})
 現價: ${price}  今日漲跌: ${stockData.changePercent >= 0 ? '+' : ''}${stockData.changePercent}%
-市值: ${stockData.marketCap}  本益比: ${stockData.peRatio}  EPS: ${stockData.eps}
-Beta: ${stockData.beta}  殖利率: ${stockData.dividendYield}
 52週高/低: ${stockData.high52w} / ${stockData.low52w}
 
 【排版規則】只能用純文字，禁止任何 Markdown 符號（### ** * _ 等）。
-請嚴格依以下格式輸出，共 220 字以內：
+請嚴格依以下格式輸出，共 250 字以內：
 
-第一行必須是（格式固定，不可更改）：
-AI估算目標價：${sym}XXX
+第一行必須是（格式固定不可更改，數字請根據你的知識庫填入真實數據）：
+METRICS|市值:X|PE:X|EPS:X|Beta:X|殖利率:X|均量:X|目標價:${sym}X
 
-然後輸出以下三段：
+說明：市值請用「兆」為單位（如 22.5兆），PE 格式如 27.4x，EPS 格式如 82.5元，Beta 如 0.88，殖利率如 2.1%，均量如 2.1萬張，目標價帶幣別符號
+
+第二行開始輸出以下三段：
 
 【核心評語】
 一句話結論。
 
 【基本面與目標價】
-說明基本面品質；對比現價 ${price} 與你剛才估算的目標價的潛在漲跌空間。
+說明基本面品質與投資價值；分析現價與目標價潛在空間。
 
 【技術與籌碼面】
-說明近期趨勢；給出建議進場或停損價位。`;
+說明近期趨勢與建議進場或停損價位。`;
 
         const stream = await groq.chat.completions.create({
           messages: [
