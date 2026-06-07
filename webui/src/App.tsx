@@ -14,41 +14,45 @@ interface StockData {
   history: Array<{ date: string; open: number; high: number; low: number; close: number; }>;
 }
 
+// ── Candlestick chart — defined at module level to avoid React remount issues ──
+function CandlestickChart({ history }: { history: StockData['history'] }) {
+  const data = history.slice(-80);
+  if (!data.length) return (
+    <div className="text-[10px] text-[#1E2530] text-center py-10 font-mono tracking-widest">NO DATA</div>
+  );
+
+  const W = 600, H = 150;
+  const min = Math.min(...data.map(d => d.low))  * 0.998;
+  const max = Math.max(...data.map(d => d.high)) * 1.002;
+  const rng = max - min || 1;
+  const cw  = (W / data.length) * 0.55;
+  const xOf = (i: number) => (i + 0.5) * (W / data.length);
+  const yOf = (v: number) => H - ((v - min) / rng) * H;
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" height="100%"
+      preserveAspectRatio="none" style={{ display: 'block' }}>
+      {data.map((d, i) => {
+        const up   = d.close >= d.open;
+        const col  = up ? '#10B981' : '#F87171';
+        const bTop = yOf(Math.max(d.open, d.close));
+        const bBot = yOf(Math.min(d.open, d.close));
+        const bH   = Math.max(bBot - bTop, 1);
+        const x    = xOf(i);
+        return (
+          <g key={i}>
+            <line x1={x} y1={yOf(d.high)} x2={x} y2={yOf(d.low)}
+              stroke={col} strokeWidth="0.8" opacity="0.6" />
+            <rect x={x - cw / 2} y={bTop} width={cw} height={bH}
+              fill={col} opacity="0.85" />
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
 export default function App() {
-  function CandlestickChart({ history }: { history: StockData['history'] }) {
-    const data = history.slice(-80);
-    if (!data.length) return <div className="text-[10px] text-[#1E2530] text-center py-10 font-mono tracking-widest">NO DATA</div>;
-
-    const W = 600, H = 150;
-    const min = Math.min(...data.map(d => d.low))  * 0.998;
-    const max = Math.max(...data.map(d => d.high)) * 1.002;
-    const rng = max - min || 1;
-    const cw  = (W / data.length) * 0.55;
-    const xOf = (i: number) => (i + 0.5) * (W / data.length);
-    const yOf = (v: number) => H - ((v - min) / rng) * H;
-
-    return (
-      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height="100%" preserveAspectRatio="none" className="block">
-        {data.map((d, i) => {
-          const up    = d.close >= d.open;
-          const col   = up ? '#10B981' : '#F87171';
-          const bTop  = yOf(Math.max(d.open, d.close));
-          const bBot  = yOf(Math.min(d.open, d.close));
-          const bH    = Math.max(bBot - bTop, 1);
-          const x     = xOf(i);
-          return (
-            <g key={i}>
-              <line x1={x} y1={yOf(d.high)} x2={x} y2={yOf(d.low)}
-                stroke={col} strokeWidth="0.8" opacity="0.6" />
-              <rect x={x - cw / 2} y={bTop} width={cw} height={bH}
-                fill={col} opacity="0.85" />
-            </g>
-          );
-        })}
-      </svg>
-    );
-  }
-
   const [watchlist, setWatchlist] = useState([
     { symbol: '2330.TW', name: '台積電', price: 0, changePercent: 0 },
     { symbol: '2454.TW', name: '聯發科', price: 0, changePercent: 0 },
