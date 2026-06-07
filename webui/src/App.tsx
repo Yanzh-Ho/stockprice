@@ -216,9 +216,28 @@ export default function App() {
             <div className="flex gap-6 h-full">
               <div className="flex-1 flex flex-col space-y-6">
                 <div className="bg-[#0A0D14] border border-[#151922] rounded-lg p-6 relative">
-                  <h1 className="text-xl font-serif font-bold text-white">{selectedStock.symbol} <span className="text-xs text-[#6B7280] font-normal">{selectedStock.name}</span></h1>
-                  <div className="text-3xl font-mono text-white mt-2">{selectedStock.price}</div>
-                  <div className={`text-xs font-mono mt-1 ${selectedStock.changePercent >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>{selectedStock.changePercent >= 0 ? '▲' : '▼'} {Math.abs(selectedStock.changePercent)}%</div>
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <h1 className="text-xl font-serif font-bold text-white">{selectedStock.symbol} <span className="text-xs text-[#6B7280] font-normal">{selectedStock.name}</span></h1>
+                      <div className="text-3xl font-mono text-white mt-2">{selectedStock.price}</div>
+                      <div className={`text-xs font-mono mt-1 ${selectedStock.changePercent >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>{selectedStock.changePercent >= 0 ? '▲' : '▼'} {Math.abs(selectedStock.changePercent)}%</div>
+                    </div>
+                    {aiMetrics['操作'] && (() => {
+                      const v = aiMetrics['操作'];
+                      const isBuy  = v === '買進';
+                      const isSell = v === '賣出';
+                      const col = isBuy ? 'text-emerald-400 border-emerald-400/30 bg-emerald-400/10'
+                                : isSell ? 'text-rose-400 border-rose-400/30 bg-rose-400/10'
+                                : 'text-amber-400 border-amber-400/30 bg-amber-400/10';
+                      const dot = isBuy ? 'bg-emerald-400' : isSell ? 'bg-rose-400' : 'bg-amber-400';
+                      return (
+                        <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded border font-mono text-sm font-semibold tracking-wider ${col}`}>
+                          <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
+                          {v}
+                        </div>
+                      );
+                    })()}
+                  </div>
 
                   <div className="h-48 mt-6 border-t border-[#151922] pt-4 overflow-hidden">
                     <CandlestickChart
