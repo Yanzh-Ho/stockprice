@@ -72,44 +72,58 @@ export default function App() {
   const [aiMetrics, setAiMetrics] = useState<Record<string, string>>({});
   const [isConnected, setIsConnected] = useState(false);
   const [loadingData, setLoadingData] = useState(false);
-  const ws = useRef<WebSocket | null>(null);
+  const ws          = useRef<WebSocket | null>(null);
+  const autoQueue   = useRef<string[]>([]);   // 背景待抓的自選股列表
+  const isBgFetch   = useRef(false);           // 目前是否在做背景靜默抓取
+
+  // 送出背景 priceOnly 請求（不更新主面板、不顯示 loading）
+  function sendBgFetch(socket: WebSocket, sym: string) {
+    socket.send(JSON.stringify({ action: 'requestAnalysis', symbol: sym, priceOnly: true }));
+  }
 
   useEffect(() => {
     function connect() {
       const socket = new WebSocket(WS_URL);
       socket.onopen = () => {
         setIsConnected(true);
+        // 第一支股票：完整分析 + 主面板展示
+        isBgFetch.current = false;
         socket.send(JSON.stringify({ action: 'requestAnalysis', symbol: '2330.TW' }));
         setLoadingData(true);
+        // 其餘自選股排隊背景抓價（等第一支 done 後依序送出）
+        autoQueue.current = ['2454.TW', '2317.TW', '2412.TW', 'AAPL', 'NVDA'];
       };
+
       socket.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data);
 
           if (message.type === 'stockData') {
-            // 🔥 最核心的修復：收到任何股票訊息，第一時間無條件停止轉圈圈！
-            setLoadingData(false);
-
             if (message.data) {
               const fresh = message.data;
               const localizedName = taiwanStockNames[fresh.symbol] || fresh.name || fresh.symbol;
-              setSelectedStock({ ...fresh, name: localizedName });
 
-              setWatchlist(prev => prev.map(item => {
-                if (item.symbol.split('.')[0].toUpperCase() === fresh.symbol.split('.')[0].toUpperCase()) {
-                  return { ...item, price: fresh.price, changePercent: fresh.changePercent, name: localizedName };
-                }
-                return item;
-              }));
-            } else {
+              // 更新 watchlist 報價（任何情況都做）
+              setWatchlist(prev => prev.map(item =>
+                item.symbol.split('.')[0].toUpperCase() === fresh.symbol.split('.')[0].toUpperCase()
+                  ? { ...item, price: fresh.price, changePercent: fresh.changePercent, name: localizedName }
+                  : item
+              ));
+
+              // 只有非背景抓取才更新主面板
+              if (!isBgFetch.current) {
+                setLoadingData(false);
+                setSelectedStock({ ...fresh, name: localizedName });
+              }
+            } else if (!isBgFetch.current) {
+              setLoadingData(false);
               alert(message.error || '無法取得資料');
             }
           }
 
-          if (message.type === 'aiChunk') {
+          if (message.type === 'aiChunk' && !isBgFetch.current) {
             setAiAnalysis(prev => {
               const next = prev + message.text;
-              // Parse METRICS line once it's complete
               const metricsLine = next.match(/^METRICS\|([^\n]+)/m);
               if (metricsLine) {
                 const parsed: Record<string, string> = {};
@@ -122,8 +136,20 @@ export default function App() {
               return next;
             });
           }
+
+          // 每次 done 都觸發下一支自選股的背景抓取
+          if (message.type === 'done') {
+            const next = autoQueue.current.shift();
+            if (next && socket.readyState === WebSocket.OPEN) {
+              isBgFetch.current = true;
+              sendBgFetch(socket, next);
+            } else if (!next) {
+              isBgFetch.current = false; // 全部抓完
+            }
+          }
         } catch (err) {}
       };
+
       socket.onclose = () => { setIsConnected(false); setTimeout(connect, 5000); };
       ws.current = socket;
     }
@@ -132,13 +158,14 @@ export default function App() {
   }, []);
 
   const handleQueryStock = (symbolStr: string) => {
-    if (!symbolStr) return;
-    if (ws.current && ws.current.readyState === WebSocket.OPEN) {
-      setAiAnalysis('');
-      setAiMetrics({});
-      setLoadingData(true);
-      ws.current.send(JSON.stringify({ action: 'requestAnalysis', symbol: symbolStr.trim().toUpperCase() }));
-    }
+    if (!symbolStr || !ws.current || ws.current.readyState !== WebSocket.OPEN) return;
+    // 使用者手動查詢：清空背景佇列，切換為完整分析模式
+    autoQueue.current = [];
+    isBgFetch.current = false;
+    setAiAnalysis('');
+    setAiMetrics({});
+    setLoadingData(true);
+    ws.current.send(JSON.stringify({ action: 'requestAnalysis', symbol: symbolStr.trim().toUpperCase() }));
   };
 
   return (

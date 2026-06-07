@@ -110,8 +110,9 @@ wss.on('connection', (ws) => {
       const payload = JSON.parse(Buffer.isBuffer(message) ? message.toString() : message);
       if (payload.action !== 'requestAnalysis') return;
 
-      const input = payload.symbol || '2330';
-      console.log(`Fetching: ${input}`);
+      const input     = payload.symbol   || '2330';
+      const priceOnly = !!payload.priceOnly;
+      console.log(`Fetching: ${input}${priceOnly ? ' (priceOnly)' : ''}`);
 
       let stockData;
       try {
@@ -142,6 +143,12 @@ wss.on('connection', (ws) => {
       }
 
       ws.send(JSON.stringify({ type: 'stockData', data: stockData }));
+
+      // priceOnly 模式：只要報價，直接結束，不跑 AI
+      if (priceOnly) {
+        ws.send(JSON.stringify({ type: 'done' }));
+        return;
+      }
 
       // Groq AI 串流 — AI 估算目標價 + 純文字三段格式
       try {
