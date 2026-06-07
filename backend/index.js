@@ -1,6 +1,8 @@
 const http = require('http');
 const WebSocket = require('ws');
 const { Groq } = require('groq-sdk');
+const YF = require('yahoo-finance2').default;
+const yahooFinance = new YF({ suppressNotices: ['yahooSurvey'] });
 
 const server = http.createServer();
 const wss = new WebSocket.Server({ server });
@@ -58,29 +60,34 @@ async function fetchChart(symbol) {
   };
 }
 
-// v7 quote API — 市值、PE、EPS、Beta、殖利率
-async function fetchQuote(symbol) {
-  for (const host of ['query1', 'query2']) {
-    try {
-      const url = `https://${host}.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbol)}`;
-      const res = await fetch(url, { headers: YF_HEADERS, signal: AbortSignal.timeout(8000) });
-      if (!res.ok) continue;
-      const json = await res.json();
-      const q = json?.quoteResponse?.result?.[0];
-      if (!q) continue;
-      return {
-        marketCap:     q.marketCap               ? `${(q.marketCap / 1e12).toFixed(2)} 兆`        : '---',
-        peRatio:       q.trailingPE              ? `${q.trailingPE.toFixed(1)}x`                   : '---',
-        eps:           q.epsTrailingTwelveMonths ? `${q.epsTrailingTwelveMonths.toFixed(2)} 元`     : '---',
-        beta:          q.beta                    ? q.beta.toFixed(2)                               : '---',
-        dividendYield: q.dividendYield           ? `${(q.dividendYield * 100).toFixed(2)}%`        : '---',
-        avgVolume:     q.averageDailyVolume3Month ? `${(q.averageDailyVolume3Month / 1e4).toFixed(1)} 萬張` : '---',
-        _high52w:      q.fiftyTwoWeekHigh,
-        _low52w:       q.fiftyTwoWeekLow,
-      };
-    } catch(e) {}
+// 基本面指標：用 yahoo-finance2.quote() 抓（有完整 cookie/crumb 管理）
+async function fetchFundamentals(symbol) {
+  try {
+    const q = await yahooFinance.quote(symbol);
+    if (!q) return {};
+
+    const isTW = /\.(TW|TWO)$/i.test(symbol);
+    // TW 成交量單位：張數（Yahoo 回傳股數，除以 1000 得張）→ 再除以 10000 得萬張
+    const avgVolStr = q.averageDailyVolume3Month
+      ? (isTW
+          ? `${(q.averageDailyVolume3Month / 1e7).toFixed(1)} 萬張`
+          : `${(q.averageDailyVolume3Month / 1e6).toFixed(1)} M`)
+      : '---';
+
+    return {
+      marketCap:     q.marketCap                   ? `${(q.marketCap / 1e12).toFixed(2)} 兆`               : '---',
+      peRatio:       q.trailingPE                  ? `${q.trailingPE.toFixed(1)}x`                          : '---',
+      eps:           q.epsTrailingTwelveMonths      ? `${q.epsTrailingTwelveMonths.toFixed(2)} 元`           : '---',
+      beta:          q.beta                         ? q.beta.toFixed(2)                                     : '---',
+      dividendYield: q.trailingAnnualDividendYield  ? `${(q.trailingAnnualDividendYield * 100).toFixed(2)}%` : '---',
+      avgVolume:     avgVolStr,
+      _high52w:      q.fiftyTwoWeekHigh ?? null,
+      _low52w:       q.fiftyTwoWeekLow  ?? null,
+    };
+  } catch(e) {
+    console.log('Fundamentals (yahoo-finance2) failed:', e.message);
+    return {};
   }
-  return {};
 }
 
 
@@ -108,9 +115,9 @@ wss.on('connection', (ws) => {
 
       let stockData;
       try {
-        // 兩支 API 並行抓取（移除已失效的 v11 target price）
+        // chart 用直接 fetch，基本面用 yahoo-finance2（有 cookie/crumb 管理）
         const base = await resolveSymbol(input);
-        const quote = await fetchQuote(base.symbol).catch(() => ({}));
+        const quote = await fetchFundamentals(base.symbol).catch(() => ({}));
 
         const { _high52w, _low52w, ...cleanQuote } = quote;
         const isTW = /\.(TW|TWO)$/i.test(base.symbol);
