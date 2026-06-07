@@ -186,6 +186,7 @@ METRICS|市值:X|PE:X|EPS:X|Beta:X|殖利率:X|均量:X|目標價:${sym}X
           ],
           model: 'llama-3.1-8b-instant',
           stream: true,
+          temperature: 0,
         });
 
         for await (const chunk of stream) {
