@@ -28,7 +28,7 @@ export default function App() {
     const yOf = (v: number) => H - ((v - min) / rng) * H;
 
     return (
-      <svg viewBox={`0 0 ${W} ${H}`} width="100%" className="block">
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height="100%" preserveAspectRatio="none" className="block">
         {data.map((d, i) => {
           const up    = d.close >= d.open;
           const col   = up ? '#10B981' : '#F87171';
@@ -178,7 +178,7 @@ export default function App() {
                   <div className="text-3xl font-mono text-white mt-2">{selectedStock.price}</div>
                   <div className={`text-xs font-mono mt-1 ${selectedStock.changePercent >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>{selectedStock.changePercent >= 0 ? '▲' : '▼'} {Math.abs(selectedStock.changePercent)}%</div>
 
-                  <div className="h-48 mt-6 border-t border-[#151922] pt-4">
+                  <div className="h-48 mt-6 border-t border-[#151922] pt-4 overflow-hidden">
                     <CandlestickChart history={selectedStock.history} />
                   </div>
                 </div>
