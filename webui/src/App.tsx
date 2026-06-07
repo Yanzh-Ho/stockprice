@@ -15,11 +15,15 @@ interface StockData {
 }
 
 // ── Candlestick chart — defined at module level to avoid React remount issues ──
-function CandlestickChart({ history }: { history: StockData['history'] }) {
+function CandlestickChart({ history, isTW }: { history: StockData['history']; isTW: boolean }) {
   const data = history.slice(-80);
   if (!data.length) return (
     <div className="text-[10px] text-[#1E2530] text-center py-10 font-mono tracking-widest">NO DATA</div>
   );
+
+  // 台股：漲紅跌綠；美股：漲綠跌紅
+  const UP_COL   = isTW ? '#F87171' : '#10B981';
+  const DOWN_COL = isTW ? '#10B981' : '#F87171';
 
   const W = 600, H = 150;
   const min = Math.min(...data.map(d => d.low))  * 0.998;
@@ -34,7 +38,7 @@ function CandlestickChart({ history }: { history: StockData['history'] }) {
       preserveAspectRatio="none" style={{ display: 'block' }}>
       {data.map((d, i) => {
         const up   = d.close >= d.open;
-        const col  = up ? '#10B981' : '#F87171';
+        const col  = up ? UP_COL : DOWN_COL;
         const bTop = yOf(Math.max(d.open, d.close));
         const bBot = yOf(Math.min(d.open, d.close));
         const bH   = Math.max(bBot - bTop, 1);
@@ -190,7 +194,10 @@ export default function App() {
                   <div className={`text-xs font-mono mt-1 ${selectedStock.changePercent >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>{selectedStock.changePercent >= 0 ? '▲' : '▼'} {Math.abs(selectedStock.changePercent)}%</div>
 
                   <div className="h-48 mt-6 border-t border-[#151922] pt-4 overflow-hidden">
-                    <CandlestickChart history={selectedStock.history} />
+                    <CandlestickChart
+                      history={selectedStock.history}
+                      isTW={/\.(TW|TWO)$/i.test(selectedStock.symbol)}
+                    />
                   </div>
                 </div>
 
