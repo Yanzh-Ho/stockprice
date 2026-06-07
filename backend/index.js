@@ -80,25 +80,6 @@ async function fetchQuote(symbol) {
   return {};
 }
 
-// v11 quoteSummary — 法人目標價
-async function fetchTargetPrice(symbol) {
-  for (const host of ['query1', 'query2']) {
-    try {
-      const url = `https://${host}.finance.yahoo.com/v11/finance/quoteSummary/${encodeURIComponent(symbol)}?modules=financialData`;
-      const res = await fetch(url, { headers: YF_HEADERS, signal: AbortSignal.timeout(8000) });
-      if (!res.ok) continue;
-      const json = await res.json();
-      const fd = json?.quoteSummary?.result?.[0]?.financialData;
-      if (!fd) continue;
-      return {
-        targetMean: fd.targetMeanPrice?.raw ?? null,
-        targetHigh: fd.targetHighPrice?.raw ?? null,
-        targetLow:  fd.targetLowPrice?.raw  ?? null,
-      };
-    } catch(e) {}
-  }
-  return {};
-}
 
 // 台股純數字 → 先試 .TWO 再試 .TW；美股直打
 async function resolveSymbol(input) {
@@ -124,12 +105,9 @@ wss.on('connection', (ws) => {
 
       let stockData;
       try {
-        // 三支 API 並行抓取
+        // 兩支 API 並行抓取（移除已失效的 v11 target price）
         const base = await resolveSymbol(input);
-        const [quote, tgt] = await Promise.all([
-          fetchQuote(base.symbol).catch(() => ({})),
-          fetchTargetPrice(base.symbol).catch(() => ({})),
-        ]);
+        const quote = await fetchQuote(base.symbol).catch(() => ({}));
 
         const { _high52w, _low52w, ...cleanQuote } = quote;
         const isTW = /\.(TW|TWO)$/i.test(base.symbol);
@@ -137,15 +115,14 @@ wss.on('connection', (ws) => {
 
         const hi52 = base.high52w ?? _high52w;
         const lo52 = base.low52w  ?? _low52w;
-        const targetNum = tgt.targetMean;
-        const targetStr = targetNum != null ? `${sym}${targetNum.toFixed(isTW ? 0 : 2)}` : '---';
 
         stockData = {
           ...base,
           ...cleanQuote,
-          high52w:     hi52 ? `${sym}${hi52}` : '---',
-          low52w:      lo52 ? `${sym}${lo52}` : '---',
-          targetPrice: targetStr,
+          high52w: hi52 ? `${sym}${hi52}` : '---',
+          low52w:  lo52 ? `${sym}${lo52}` : '---',
+          isTW,
+          sym,
         };
       } catch (fetchErr) {
         console.error('Fetch failed:', fetchErr.message);
@@ -156,28 +133,31 @@ wss.on('connection', (ws) => {
 
       ws.send(JSON.stringify({ type: 'stockData', data: stockData }));
 
-      // Groq AI 串流 — 純文字三段格式
+      // Groq AI 串流 — AI 估算目標價 + 純文字三段格式
       try {
-        const targetNum = parseFloat((stockData.targetPrice || '').replace(/[^0-9.]/g, ''));
-        const upside = !isNaN(targetNum) && stockData.price
-          ? `${((targetNum - stockData.price) / stockData.price * 100).toFixed(1)}%`
-          : '---';
+        const sym = stockData.sym || (stockData.isTW ? 'NT$' : '$');
+        const price = stockData.price;
 
         const userPrompt =
 `分析標的: ${stockData.name} (${stockData.symbol})
-現價: ${stockData.price}  今日漲跌: ${stockData.changePercent >= 0 ? '+' : ''}${stockData.changePercent}%
+現價: ${price}  今日漲跌: ${stockData.changePercent >= 0 ? '+' : ''}${stockData.changePercent}%
 市值: ${stockData.marketCap}  本益比: ${stockData.peRatio}  EPS: ${stockData.eps}
 Beta: ${stockData.beta}  殖利率: ${stockData.dividendYield}
-法人目標均價: ${stockData.targetPrice}（潛在空間 ${upside}）
+52週高/低: ${stockData.high52w} / ${stockData.low52w}
 
 【排版規則】只能用純文字，禁止任何 Markdown 符號（### ** * _ 等）。
-請依以下格式輸出（200字以內）：
+請嚴格依以下格式輸出，共 220 字以內：
+
+第一行必須是（格式固定，不可更改）：
+AI估算目標價：${sym}XXX
+
+然後輸出以下三段：
 
 【核心評語】
 一句話結論。
 
 【基本面與目標價】
-說明基本面現況；對比現價與法人目標價的潛在漲跌空間。
+說明基本面品質；對比現價 ${price} 與你剛才估算的目標價的潛在漲跌空間。
 
 【技術與籌碼面】
 說明近期趨勢；給出建議進場或停損價位。`;

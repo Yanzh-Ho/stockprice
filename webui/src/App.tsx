@@ -27,6 +27,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedStock, setSelectedStock] = useState<StockData | null>(null);
   const [aiAnalysis, setAiAnalysis] = useState('');
+  const [aiTargetPrice, setAiTargetPrice] = useState('');
   const [isConnected, setIsConnected] = useState(false);
   const [loadingData, setLoadingData] = useState(false);
   const ws = useRef<WebSocket | null>(null);
@@ -63,7 +64,15 @@ export default function App() {
             }
           }
 
-          if (message.type === 'aiChunk') setAiAnalysis(prev => prev + message.text);
+          if (message.type === 'aiChunk') {
+            setAiAnalysis(prev => {
+              const next = prev + message.text;
+              // 即時 parse 第一行的 AI 估算目標價
+              const m = next.match(/AI估算目標價[：:]\s*((?:NT\$|\$)[\d,]+(?:\.[\d]{0,2})?)/);
+              if (m) setAiTargetPrice(m[1]);
+              return next;
+            });
+          }
         } catch (err) {}
       };
       socket.onclose = () => { setIsConnected(false); setTimeout(connect, 5000); };
@@ -77,6 +86,7 @@ export default function App() {
     if (!symbolStr) return;
     if (ws.current && ws.current.readyState === WebSocket.OPEN) {
       setAiAnalysis('');
+      setAiTargetPrice('');
       setLoadingData(true);
       ws.current.send(JSON.stringify({ action: 'requestAnalysis', symbol: symbolStr.trim().toUpperCase() }));
     }
@@ -174,9 +184,14 @@ export default function App() {
                       <span className="text-white">{row.val}</span>
                     </div>
                   ))}
-                  <div className="flex justify-between border-b border-[#151922] pb-2 pt-2 bg-[#111622] px-2 -mx-2 rounded">
-                    <span className="text-[#38BDF8] font-serif font-bold">法人目標價</span>
-                    <span className="text-[#38BDF8] font-bold">{selectedStock.targetPrice}</span>
+                  <div className="flex justify-between pb-2 pt-3 bg-[#111622] px-2 -mx-2 rounded">
+                    <span className="text-[#38BDF8] font-serif font-bold flex items-center gap-1.5">
+                      AI 估算目標價
+                      <span className="text-[9px] font-mono text-[#38BDF8]/50 border border-[#38BDF8]/20 px-1 rounded">AI</span>
+                    </span>
+                    <span className="text-[#38BDF8] font-bold font-mono">
+                      {aiTargetPrice || (aiAnalysis ? '解析中...' : '分析中...')}
+                    </span>
                   </div>
                 </div>
               </div>
