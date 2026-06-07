@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 const WS_URL = 'wss://stockprice-2ukw.onrender.com';
 
@@ -15,9 +15,7 @@ interface StockData {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('dashboard');
-
-  // 🔥 恢復完整的自選股清單 (價格預設顯示 0，等真資料灌進來就會瞬間覆寫)
+  // 🔥 移除了沒有用到的 activeTab，保留完整的自選股清單
   const [watchlist, setWatchlist] = useState([
     { symbol: '2330.TW', name: '台積電', price: 0, changePercent: 0 },
     { symbol: '2454.TW', name: '聯發科', price: 0, changePercent: 0 },
@@ -39,7 +37,6 @@ export default function App() {
       const socket = new WebSocket(WS_URL);
       socket.onopen = () => {
         setIsConnected(true);
-        // 一連線就自動要台積電的真資料
         socket.send(JSON.stringify({ action: 'requestAnalysis', symbol: '2330.TW' }));
         setLoadingData(true);
       };
@@ -47,16 +44,13 @@ export default function App() {
         try {
           const message = JSON.parse(event.data);
 
-          // 收到真實股票資料
           if (message.type === 'stockData' && message.data) {
             const fresh = message.data;
             setLoadingData(false);
             const localizedName = taiwanStockNames[fresh.symbol] || fresh.name || fresh.symbol;
 
-            // 1. 更新主畫面
             setSelectedStock({ ...fresh, name: localizedName });
 
-            // 2. 🔥 這裡接回去了！同步更新左側 Watchlist 讓它不再是死數字
             setWatchlist(prev => prev.map(item => {
               if (item.symbol.toUpperCase() === fresh.symbol.toUpperCase()) {
                 return { ...item, price: fresh.price, changePercent: fresh.changePercent, name: localizedName };
@@ -65,7 +59,6 @@ export default function App() {
             }));
           }
 
-          // 收到 AI 分析文字
           if (message.type === 'aiChunk') {
             setAiAnalysis(prev => prev + message.text);
           }
@@ -80,7 +73,6 @@ export default function App() {
 
   const handleQueryStock = (symbolStr: string) => {
     if (!symbolStr) return;
-    setActiveTab('dashboard');
     if (ws.current && ws.current.readyState === WebSocket.OPEN) {
       setAiAnalysis('');
       setLoadingData(true);
