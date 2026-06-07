@@ -1,109 +1,213 @@
-const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
-const yahooFinance = require('yahoo-finance2').default;
 const { Groq } = require('groq-sdk');
 
-const app = express();
-const server = http.createServer(app);
+const server = http.createServer();
 const wss = new WebSocket.Server({ server });
 const groq = new Groq();
 
-try { yahooFinance.setGlobalConfig({ queue: { concurrency: 4 }, validation: { logErrors: false } }); } catch(e) {}
+// 模擬瀏覽器 Headers，繞過 Render 雲端 IP 封鎖
+const YF_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+  'Accept': 'application/json, text/plain, */*',
+  'Accept-Language': 'en-US,en;q=0.9,zh-TW;q=0.8',
+  'Accept-Encoding': 'gzip, deflate, br',
+  'Referer': 'https://finance.yahoo.com/',
+  'Origin': 'https://finance.yahoo.com',
+};
 
-async function fetchRealMarketData(symbol) {
-  const clean = symbol.trim().toUpperCase();
-  let rawQuote = null; let fullSymbol = clean;
+// v8 chart API — 即時報價 + 1年歷史
+async function fetchChart(symbol) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1y`;
+  const res = await fetch(url, { headers: YF_HEADERS, signal: AbortSignal.timeout(12000) });
+  if (!res.ok) throw new Error(`v8 HTTP ${res.status}`);
+  const json = await res.json();
+  const result = json?.chart?.result?.[0];
+  if (!result?.meta?.regularMarketPrice) throw new Error('No price data');
 
-  if (/^\d+$/.test(clean)) {
-    try { rawQuote = await yahooFinance.quote(`${clean}.TWO`); fullSymbol = `${clean}.TWO`; } catch(e) {}
-    if (!rawQuote) { try { rawQuote = await yahooFinance.quote(`${clean}.TW`); fullSymbol = `${clean}.TW`; } catch(e) {} }
-  } else { rawQuote = await yahooFinance.quote(clean); }
+  const meta = result.meta;
+  const ts   = result.timestamp || [];
+  const q    = result.indicators?.quote?.[0] || {};
+  const prev = meta.regularMarketPreviousClose || meta.chartPreviousClose || meta.regularMarketPrice;
 
-  if (!rawQuote || rawQuote.regularMarketPrice === undefined) throw new Error(`查無此代碼或 Yahoo 拒絕連線`);
+  let changePercent = meta.regularMarketChangePercent || 0;
+  let change        = meta.regularMarketChange || 0;
+  if (changePercent === 0 && prev && prev !== meta.regularMarketPrice) {
+    change        = +(meta.regularMarketPrice - prev).toFixed(2);
+    changePercent = +((change / prev) * 100).toFixed(2);
+  }
 
-  let summary = {};
-  try { summary = await yahooFinance.quoteSummary(fullSymbol, { modules: ['summaryDetail', 'defaultKeyStatistics', 'financialData'] }); } catch (err) {}
-
-  const sd = summary.summaryDetail || {}; const dks = summary.defaultKeyStatistics || {}; const fd = summary.financialData || {};
-  const currency = fullSymbol.includes('.TW') || fullSymbol.includes('.TWO') ? 'NT$' : '$';
+  const history = ts.map((t, i) => ({
+    date:  new Date(t * 1000).toISOString().split('T')[0],
+    close: (q.close || [])[i] ?? null,
+  })).filter(h => h.close != null);
 
   return {
-    quote: rawQuote, fullSymbol,
-    deepMetrics: {
-      marketCap: sd.marketCap ? `${(sd.marketCap / 1e12).toFixed(2)} 兆` : (rawQuote.marketCap ? `${(rawQuote.marketCap / 1e12).toFixed(2)} 兆` : '---'),
-      peRatio: sd.trailingPE ? `${sd.trailingPE.toFixed(1)}x` : (rawQuote.trailingPE ? `${rawQuote.trailingPE.toFixed(1)}x` : '---'),
-      eps: dks.trailingEps ? `${dks.trailingEps.toFixed(2)} 元` : (rawQuote.trailingEps ? `${rawQuote.trailingEps.toFixed(2)} 元` : '---'),
-      beta: sd.beta ? sd.beta.toFixed(2) : '---',
-      dividendYield: sd.dividendYield ? `${(sd.dividendYield * 100).toFixed(2)}%` : '---',
-      avgVolume: sd.averageVolume ? `${(sd.averageVolume / 1e4).toFixed(1)} 萬張` : '---',
-      targetPrice: fd.targetMeanPrice ? `${currency}${fd.targetMeanPrice.toFixed(1)}` : '---'
-    }
+    symbol:        meta.symbol,
+    name:          meta.longName || meta.shortName || meta.symbol,
+    price:         meta.regularMarketPrice,
+    change,
+    changePercent,
+    volume:        meta.regularMarketVolume ? `${(meta.regularMarketVolume / 1e4).toFixed(1)} 萬張` : '---',
+    high52w:       meta.fiftyTwoWeekHigh,
+    low52w:        meta.fiftyTwoWeekLow,
+    history,
   };
 }
 
+// v7 quote API — 市值、PE、EPS、Beta、殖利率
+async function fetchQuote(symbol) {
+  for (const host of ['query1', 'query2']) {
+    try {
+      const url = `https://${host}.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbol)}`;
+      const res = await fetch(url, { headers: YF_HEADERS, signal: AbortSignal.timeout(8000) });
+      if (!res.ok) continue;
+      const json = await res.json();
+      const q = json?.quoteResponse?.result?.[0];
+      if (!q) continue;
+      return {
+        marketCap:     q.marketCap               ? `${(q.marketCap / 1e12).toFixed(2)} 兆`        : '---',
+        peRatio:       q.trailingPE              ? `${q.trailingPE.toFixed(1)}x`                   : '---',
+        eps:           q.epsTrailingTwelveMonths ? `${q.epsTrailingTwelveMonths.toFixed(2)} 元`     : '---',
+        beta:          q.beta                    ? q.beta.toFixed(2)                               : '---',
+        dividendYield: q.dividendYield           ? `${(q.dividendYield * 100).toFixed(2)}%`        : '---',
+        avgVolume:     q.averageDailyVolume3Month ? `${(q.averageDailyVolume3Month / 1e4).toFixed(1)} 萬張` : '---',
+        _high52w:      q.fiftyTwoWeekHigh,
+        _low52w:       q.fiftyTwoWeekLow,
+      };
+    } catch(e) {}
+  }
+  return {};
+}
+
+// v11 quoteSummary — 法人目標價
+async function fetchTargetPrice(symbol) {
+  for (const host of ['query1', 'query2']) {
+    try {
+      const url = `https://${host}.finance.yahoo.com/v11/finance/quoteSummary/${encodeURIComponent(symbol)}?modules=financialData`;
+      const res = await fetch(url, { headers: YF_HEADERS, signal: AbortSignal.timeout(8000) });
+      if (!res.ok) continue;
+      const json = await res.json();
+      const fd = json?.quoteSummary?.result?.[0]?.financialData;
+      if (!fd) continue;
+      return {
+        targetMean: fd.targetMeanPrice?.raw ?? null,
+        targetHigh: fd.targetHighPrice?.raw ?? null,
+        targetLow:  fd.targetLowPrice?.raw  ?? null,
+      };
+    } catch(e) {}
+  }
+  return {};
+}
+
+// 台股純數字 → 先試 .TWO 再試 .TW；美股直打
+async function resolveSymbol(input) {
+  const clean = input.trim().toUpperCase();
+  if (/^\d+$/.test(clean)) {
+    try { return await fetchChart(`${clean}.TWO`); } catch(e) {}
+    try { return await fetchChart(`${clean}.TW`);  } catch(e) {}
+    throw new Error(`查無台股代號 ${clean}`);
+  }
+  return await fetchChart(clean);
+}
+
 wss.on('connection', (ws) => {
+  console.log('Client connected.');
+
   ws.on('message', async (message) => {
     try {
-      let msgString = typeof message === 'string' ? message : message.toString('utf8');
-      const payload = JSON.parse(msgString);
+      const payload = JSON.parse(Buffer.isBuffer(message) ? message.toString() : message);
+      if (payload.action !== 'requestAnalysis') return;
 
-      if (payload.action === 'requestAnalysis') {
-        const input = payload.symbol || '2330';
-        let cleanData;
+      const input = payload.symbol || '2330';
+      console.log(`Fetching: ${input}`);
 
-        try {
-          // 🔴 絕對只抓真實數據，抓不到就直接報錯，絕不給假資料！
-          const { quote, fullSymbol, deepMetrics } = await fetchRealMarketData(input);
-          let historyQuotes = [];
-          try {
-            const chartResult = await yahooFinance.chart(fullSymbol, { period1: '2024-01-01', interval: '1d' });
-            historyQuotes = (chartResult.quotes || []).filter(q => q.date && q.close).map(q => ({ date: new Date(q.date).toISOString().split('T')[0], close: q.close }));
-          } catch(e) {}
+      let stockData;
+      try {
+        // 三支 API 並行抓取
+        const base = await resolveSymbol(input);
+        const [quote, tgt] = await Promise.all([
+          fetchQuote(base.symbol).catch(() => ({})),
+          fetchTargetPrice(base.symbol).catch(() => ({})),
+        ]);
 
-          const currency = fullSymbol.includes('.TW') || fullSymbol.includes('.TWO') ? 'NT$' : '$';
-          cleanData = {
-            symbol: quote.symbol, name: quote.longName || quote.shortName || quote.symbol,
-            price: quote.regularMarketPrice, changePercent: quote.regularMarketChangePercent || 0,
-            volume: quote.regularMarketVolume ? `${(quote.regularMarketVolume / 1e4).toFixed(1)} 萬張` : '---',
-            high52w: quote.fiftyTwoWeekHigh ? `${currency}${quote.fiftyTwoWeekHigh}` : '---',
-            low52w: quote.fiftyTwoWeekLow ? `${currency}${quote.fiftyTwoWeekLow}` : '---',
-            history: historyQuotes, ...deepMetrics
-          };
+        const { _high52w, _low52w, ...cleanQuote } = quote;
+        const isTW = /\.(TW|TWO)$/i.test(base.symbol);
+        const sym  = isTW ? 'NT$' : '$';
 
-          ws.send(JSON.stringify({ type: 'stockData', data: cleanData }));
+        const hi52 = base.high52w ?? _high52w;
+        const lo52 = base.low52w  ?? _low52w;
+        const targetNum = tgt.targetMean;
+        const targetStr = targetNum != null ? `${sym}${targetNum.toFixed(isTW ? 0 : 2)}` : '---';
 
-        } catch (fetchErr) {
-          console.log("Yahoo Blocked or Not Found:", fetchErr.message);
-          // 🔴 直接告訴前端錯誤，並終止後續 AI 動作
-          ws.send(JSON.stringify({ type: 'stockData', data: null, error: 'Yahoo API 暫時阻擋了雲端主機的連線，無法取得真實數據。' }));
-          ws.send(JSON.stringify({ type: 'done' }));
-          return;
-        }
-
-        // 🟢 修復 AI 格式，強烈禁止使用 Markdown (###, **) 避免畫面亂碼
-        const userPrompt = `分析標的: ${cleanData.name} (${cleanData.symbol})\n當前股價: ${cleanData.price}\n今日漲跌: ${cleanData.changePercent}%\n法人目標價: ${cleanData.targetPrice}\n\n【重要排版指令】：絕對禁止使用任何 Markdown 符號(如 ###, **, * 等)。請直接使用純文字，並利用換行來區隔。\n\n請依序回覆以下三個段落：\n\n【核心評語】\n(寫出一句話的重點結論)\n\n【基本面與目標價】\n(寫出基本面現況，以及股價與法人目標價的潛在空間對比)\n\n【技術與籌碼面】\n(寫出技術指標趨勢與支撐壓力位)`;
-
-        try {
-          const chatCompletion = await groq.chat.completions.create({
-            messages: [
-              { role: 'system', content: '你是頂級分析師。全程用繁體中文並嚴格遵守純文字排版格式。' },
-              { role: 'user', content: userPrompt }
-            ],
-            model: 'llama-3.1-8b-instant', stream: true
-          });
-          for await (const chunk of chatCompletion) {
-            const text = chunk.choices[0]?.delta?.content || '';
-            if (text) ws.send(JSON.stringify({ type: 'aiChunk', text }));
-          }
-        } catch (aiErr) {
-           ws.send(JSON.stringify({ type: 'aiChunk', text: '【系統提示】\nAI 伺服器目前忙碌中，但左側與右側的真實市場數據已為您更新。' }));
-        }
+        stockData = {
+          ...base,
+          ...cleanQuote,
+          high52w:     hi52 ? `${sym}${hi52}` : '---',
+          low52w:      lo52 ? `${sym}${lo52}` : '---',
+          targetPrice: targetStr,
+        };
+      } catch (fetchErr) {
+        console.error('Fetch failed:', fetchErr.message);
+        ws.send(JSON.stringify({ type: 'stockData', data: null, error: `查無此代號或 Yahoo 暫時限流，請稍後再試。(${fetchErr.message})` }));
         ws.send(JSON.stringify({ type: 'done' }));
+        return;
       }
-    } catch (err) {}
+
+      ws.send(JSON.stringify({ type: 'stockData', data: stockData }));
+
+      // Groq AI 串流 — 純文字三段格式
+      try {
+        const targetNum = parseFloat((stockData.targetPrice || '').replace(/[^0-9.]/g, ''));
+        const upside = !isNaN(targetNum) && stockData.price
+          ? `${((targetNum - stockData.price) / stockData.price * 100).toFixed(1)}%`
+          : '---';
+
+        const userPrompt =
+`分析標的: ${stockData.name} (${stockData.symbol})
+現價: ${stockData.price}  今日漲跌: ${stockData.changePercent >= 0 ? '+' : ''}${stockData.changePercent}%
+市值: ${stockData.marketCap}  本益比: ${stockData.peRatio}  EPS: ${stockData.eps}
+Beta: ${stockData.beta}  殖利率: ${stockData.dividendYield}
+法人目標均價: ${stockData.targetPrice}（潛在空間 ${upside}）
+
+【排版規則】只能用純文字，禁止任何 Markdown 符號（### ** * _ 等）。
+請依以下格式輸出（200字以內）：
+
+【核心評語】
+一句話結論。
+
+【基本面與目標價】
+說明基本面現況；對比現價與法人目標價的潛在漲跌空間。
+
+【技術與籌碼面】
+說明近期趨勢；給出建議進場或停損價位。`;
+
+        const stream = await groq.chat.completions.create({
+          messages: [
+            { role: 'system', content: '你是台股與美股的頂級分析師，全程使用繁體中文，嚴格遵守純文字格式。' },
+            { role: 'user',   content: userPrompt }
+          ],
+          model: 'llama-3.1-8b-instant',
+          stream: true,
+        });
+
+        for await (const chunk of stream) {
+          const text = chunk.choices[0]?.delta?.content || '';
+          if (text) ws.send(JSON.stringify({ type: 'aiChunk', text }));
+        }
+      } catch (aiErr) {
+        ws.send(JSON.stringify({ type: 'aiChunk', text: '【系統提示】\nAI 伺服器忙碌中，但右側真實市場數據已更新。' }));
+      }
+
+      ws.send(JSON.stringify({ type: 'done' }));
+    } catch (err) {
+      console.error('WS error:', err.message);
+    }
   });
 });
 
-process.on('uncaughtException', () => {}); process.on('unhandledRejection', () => {});
-const PORT = process.env.PORT || 10000; server.listen(PORT, '0.0.0.0', () => console.log(`Real Data Strict Backend Live on ${PORT}`));
+process.on('uncaughtException',  err => console.error('Uncaught:', err.message));
+process.on('unhandledRejection', r   => console.error('Rejected:', r));
+
+const PORT = process.env.PORT || 10000;
+server.listen(PORT, '0.0.0.0', () => console.log(`Live on ${PORT}`));
