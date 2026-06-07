@@ -11,10 +11,44 @@ interface StockData {
   marketCap: string; peRatio: string; eps: string; beta: string;
   volume: string; avgVolume: string; high52w: string; low52w: string;
   dividendYield: string; targetPrice: string;
-  history: Array<{ date: string; close: number; }>;
+  history: Array<{ date: string; open: number; high: number; low: number; close: number; }>;
 }
 
 export default function App() {
+  function CandlestickChart({ history }: { history: StockData['history'] }) {
+    const data = history.slice(-80);
+    if (!data.length) return <div className="text-[10px] text-[#1E2530] text-center py-10 font-mono tracking-widest">NO DATA</div>;
+
+    const W = 600, H = 150;
+    const min = Math.min(...data.map(d => d.low))  * 0.998;
+    const max = Math.max(...data.map(d => d.high)) * 1.002;
+    const rng = max - min || 1;
+    const cw  = (W / data.length) * 0.55;
+    const xOf = (i: number) => (i + 0.5) * (W / data.length);
+    const yOf = (v: number) => H - ((v - min) / rng) * H;
+
+    return (
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" className="block">
+        {data.map((d, i) => {
+          const up    = d.close >= d.open;
+          const col   = up ? '#10B981' : '#F87171';
+          const bTop  = yOf(Math.max(d.open, d.close));
+          const bBot  = yOf(Math.min(d.open, d.close));
+          const bH    = Math.max(bBot - bTop, 1);
+          const x     = xOf(i);
+          return (
+            <g key={i}>
+              <line x1={x} y1={yOf(d.high)} x2={x} y2={yOf(d.low)}
+                stroke={col} strokeWidth="0.8" opacity="0.6" />
+              <rect x={x - cw / 2} y={bTop} width={cw} height={bH}
+                fill={col} opacity="0.85" />
+            </g>
+          );
+        })}
+      </svg>
+    );
+  }
+
   const [watchlist, setWatchlist] = useState([
     { symbol: '2330.TW', name: '台積電', price: 0, changePercent: 0 },
     { symbol: '2454.TW', name: '聯發科', price: 0, changePercent: 0 },
@@ -144,16 +178,8 @@ export default function App() {
                   <div className="text-3xl font-mono text-white mt-2">{selectedStock.price}</div>
                   <div className={`text-xs font-mono mt-1 ${selectedStock.changePercent >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>{selectedStock.changePercent >= 0 ? '▲' : '▼'} {Math.abs(selectedStock.changePercent)}%</div>
 
-                  <div className="h-48 mt-6 border-t border-[#151922] pt-4 flex items-end relative">
-                    {selectedStock.history && selectedStock.history.length > 0 && (
-                      <svg className="w-full h-full opacity-80" viewBox="0 0 100 100" preserveAspectRatio="none">
-                        <polyline fill="none" stroke="#10B981" strokeWidth="1.5" points={selectedStock.history.map((h, i) => {
-                          const min = Math.min(...selectedStock.history.map(x => x.close));
-                          const max = Math.max(...selectedStock.history.map(x => x.close));
-                          return `${(i / (selectedStock.history.length - 1)) * 100},${100 - ((h.close - min) / (max - min || 1)) * 80 - 10}`;
-                        }).join(' ')} />
-                      </svg>
-                    )}
+                  <div className="h-48 mt-6 border-t border-[#151922] pt-4">
+                    <CandlestickChart history={selectedStock.history} />
                   </div>
                 </div>
 

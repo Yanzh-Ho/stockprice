@@ -39,8 +39,11 @@ async function fetchChart(symbol) {
 
   const history = ts.map((t, i) => ({
     date:  new Date(t * 1000).toISOString().split('T')[0],
+    open:  (q.open  || [])[i] ?? null,
+    high:  (q.high  || [])[i] ?? null,
+    low:   (q.low   || [])[i] ?? null,
     close: (q.close || [])[i] ?? null,
-  })).filter(h => h.close != null);
+  })).filter(h => h.close != null && h.open != null);
 
   return {
     symbol:        meta.symbol,
