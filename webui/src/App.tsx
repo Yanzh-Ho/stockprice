@@ -15,7 +15,6 @@ interface StockData {
 }
 
 export default function App() {
-  // 🔥 移除了沒有用到的 activeTab，保留完整的自選股清單
   const [watchlist, setWatchlist] = useState([
     { symbol: '2330.TW', name: '台積電', price: 0, changePercent: 0 },
     { symbol: '2454.TW', name: '聯發科', price: 0, changePercent: 0 },
@@ -44,24 +43,27 @@ export default function App() {
         try {
           const message = JSON.parse(event.data);
 
-          if (message.type === 'stockData' && message.data) {
-            const fresh = message.data;
+          if (message.type === 'stockData') {
+            // 🔥 最核心的修復：收到任何股票訊息，第一時間無條件停止轉圈圈！
             setLoadingData(false);
-            const localizedName = taiwanStockNames[fresh.symbol] || fresh.name || fresh.symbol;
 
-            setSelectedStock({ ...fresh, name: localizedName });
+            if (message.data) {
+              const fresh = message.data;
+              const localizedName = taiwanStockNames[fresh.symbol] || fresh.name || fresh.symbol;
+              setSelectedStock({ ...fresh, name: localizedName });
 
-            setWatchlist(prev => prev.map(item => {
-              if (item.symbol.toUpperCase() === fresh.symbol.toUpperCase()) {
-                return { ...item, price: fresh.price, changePercent: fresh.changePercent, name: localizedName };
-              }
-              return item;
-            }));
+              setWatchlist(prev => prev.map(item => {
+                if (item.symbol.split('.')[0].toUpperCase() === fresh.symbol.split('.')[0].toUpperCase()) {
+                  return { ...item, price: fresh.price, changePercent: fresh.changePercent, name: localizedName };
+                }
+                return item;
+              }));
+            } else {
+              alert(message.error || '無法取得資料');
+            }
           }
 
-          if (message.type === 'aiChunk') {
-            setAiAnalysis(prev => prev + message.text);
-          }
+          if (message.type === 'aiChunk') setAiAnalysis(prev => prev + message.text);
         } catch (err) {}
       };
       socket.onclose = () => { setIsConnected(false); setTimeout(connect, 5000); };
