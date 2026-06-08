@@ -39,6 +39,9 @@ interface Msg {
   ticker?: string | null;
 }
 
+interface PortfolioHolding { ticker: string; buyPrice: number; lots: number }
+interface AiPrediction { ticker: string; targetPrice: number; date: string; priceAtTime: number }
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function genCandles(base: number, n = 252, trend = 0.001, vol = 0.018): Candle[] {
@@ -264,12 +267,27 @@ const STOCKS: Record<string, Stock> = Object.fromEntries(
 
 const WATCHLIST = ['2330', '2454', '2317', '2412', 'TSM', 'NVDA', 'AAPL', 'TSLA'];
 
-const PORTFOLIO = [
-  { ticker: 'NVDA',  shares: 15,   avgCost: 648.50 },
-  { ticker: 'TSM',   shares: 50,   avgCost: 144.80 },
-  { ticker: '2330',  shares: 3000, avgCost: 695 },
-  { ticker: '2454',  shares: 500,  avgCost: 950 },
+const PF_KEY = 'fp_pf', ACC_KEY = 'fp_acc';
+const PF_DEFAULT: PortfolioHolding[] = [
+  { ticker: 'NVDA', buyPrice: 648.50, lots: 15  },
+  { ticker: 'TSM',  buyPrice: 144.80, lots: 50  },
+  { ticker: '2330', buyPrice: 695,    lots: 3   },
+  { ticker: '2454', buyPrice: 950,    lots: 0.5 },
 ];
+const loadPF  = (): PortfolioHolding[] => { try { const s = localStorage.getItem(PF_KEY);  return s ? JSON.parse(s) : PF_DEFAULT; } catch { return PF_DEFAULT; } };
+const savePF  = (d: PortfolioHolding[]) => localStorage.setItem(PF_KEY, JSON.stringify(d));
+const loadAcc = (): AiPrediction[]      => { try { return JSON.parse(localStorage.getItem(ACC_KEY) ?? '[]'); } catch { return []; } };
+const saveAcc = (d: AiPrediction[])     => localStorage.setItem(ACC_KEY, JSON.stringify(d));
+
+const SECTOR_PEERS: Record<string, string[]> = {
+  '半導體':       ['2330', 'TSM', 'NVDA'],
+  'IC 設計':      ['2454', 'NVDA'],
+  '電子代工':     ['2317'],
+  '電信':         ['2412'],
+  '金融':         ['2882'],
+  '科技':         ['AAPL', 'MSFT'],
+  '非必需消費品': ['TSLA'],
+};
 
 const AI_RESPONSES: Record<string, string> = {
   '2330': '▌ 市場環境與近期動態\n台積電掌控全球超過 60% 的先進晶圓代工產能，是 AI 晶片供應鏈核心骨幹。輝達與蘋果訂單能見度延伸至 2026 年，外資連續 8 日買超。2 奈米製程良率超出市場預期，法說會細節即將揭露，市場情緒偏多。\n\n▌ 技術面訊號\n週線站上 20 週均線，RSI 62 偏強未過熱，成交量放大配合上攻。短期壓力區 NT$920–945（52W 高點），支撐在 NT$840（月線）。MACD 黃金交叉成立，中期上行動能完整。\n\n▌ 主要風險因子\n• 台灣海峽地緣政治風險（尾端但影響最大）\n• 客戶集中度偏高（蘋果＋輝達合計佔 50% 營收）\n• 美元兌台幣匯率敞口，每升值 1% 稀釋 EPS 約 0.4%\n• 半導體景氣循環下行風險（CoWoS 擴產後供需平衡點）\n\n▌ 投資建議摘要\n**目標價：NT$970**（+10.9%）｜**停損點：NT$820**｜**倉位建議：核心持股，建議 15–20%**',
@@ -548,7 +566,16 @@ function MiniStockCard({ stock, onSelect }: { stock: Stock; onSelect: (t: string
 
 // ── AnalysisPanel ─────────────────────────────────────────────────────────────
 
-function AnalysisPanel({ stock }: { stock: Stock | null }) {
+function AnalysisPanel({ stock, allStocks }: { stock: Stock | null; allStocks: Record<string, Stock> }) {
+  useEffect(() => {
+    if (!stock?.target?.mid) return;
+    const today = new Date().toISOString().split('T')[0];
+    const acc = loadAcc();
+    if (!acc.some(a => a.ticker === stock.ticker && a.date === today)) {
+      saveAcc([...acc, { ticker: stock.ticker, targetPrice: stock.target.mid, date: today, priceAtTime: stock.price }]);
+    }
+  }, [stock?.ticker]);
+
   if (!stock) return (
     <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#4a6890', textAlign: 'center', padding: 40 }}>
       <div>
@@ -687,6 +714,78 @@ function AnalysisPanel({ stock }: { stock: Stock | null }) {
           })}
         </div>
       )}
+
+      {/* Peer Comparison */}
+      {(() => {
+        const peers = (SECTOR_PEERS[stock.sector] ?? [])
+          .map(t => allStocks[t]).filter(Boolean).filter(s => s.ticker !== stock.ticker) as Stock[];
+        if (!peers.length) return null;
+        return (
+          <div style={card}>
+            <div style={stLabel}>同業比較 · {stock.sector}</div>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr>
+                  {['代碼', '現價', '本益比', 'EPS', '市值', '信號'].map((h, i) => (
+                    <th key={h} style={{ padding: '0 4px 8px', textAlign: i === 0 ? 'left' : 'right', fontSize: 10, fontWeight: 600, letterSpacing: '.06em', textTransform: 'uppercase' as const, color: '#4a6890' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {([stock, ...peers] as Stock[]).map(s => (
+                  <tr key={s.ticker} style={{ borderTop: '1px solid rgba(79,142,247,.08)', background: s.ticker === stock.ticker ? 'rgba(79,142,247,.06)' : 'none' }}>
+                    <td style={{ padding: '7px 4px' }}>
+                      <div style={{ fontFamily: "'JetBrains Mono',monospace", fontWeight: 700, fontSize: 11 }}>{s.ticker}</div>
+                      <div style={{ fontSize: 10, color: '#4a6890' }}>{s.name}</div>
+                    </td>
+                    <td style={{ textAlign: 'right', fontFamily: "'JetBrains Mono',monospace", fontSize: 11, padding: '7px 4px' }}>{s.sym}{s.price.toLocaleString()}</td>
+                    <td style={{ textAlign: 'right', fontFamily: "'JetBrains Mono',monospace", fontSize: 11, padding: '7px 4px' }}>{s.pe}</td>
+                    <td style={{ textAlign: 'right', fontFamily: "'JetBrains Mono',monospace", fontSize: 11, padding: '7px 4px' }}>{s.eps}</td>
+                    <td style={{ textAlign: 'right', fontFamily: "'JetBrains Mono',monospace", fontSize: 11, padding: '7px 4px' }}>{s.cap}</td>
+                    <td style={{ textAlign: 'right', padding: '7px 4px' }}>
+                      <span style={{ fontSize: 10, fontWeight: 600, color: vc(s.verdict), background: vbg(s.verdict), border: `1px solid ${vbd(s.verdict)}`, padding: '2px 6px', borderRadius: 3 }}>{s.verdict}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      })()}
+
+      {/* AI Accuracy History */}
+      {(() => {
+        const history = loadAcc().filter(a => a.ticker === stock.ticker);
+        if (!history.length) return null;
+        const hits = history.filter(a => Math.abs((stock.price - a.targetPrice) / a.priceAtTime * 100) < 10);
+        const hitRate = (hits.length / history.length * 100).toFixed(0);
+        return (
+          <div style={card}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <div style={stLabel}>AI 歷史目標價準確率</div>
+              <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 13, fontWeight: 700, color: Number(hitRate) >= 60 ? '#00d98b' : '#ff4060' }}>{hitRate}% 命中率</span>
+            </div>
+            {history.slice(-5).reverse().map((a, i) => {
+              const daysSince = Math.floor((Date.now() - new Date(a.date).getTime()) / 86400000);
+              const pctDiff = (stock.price - a.targetPrice) / a.priceAtTime * 100;
+              const hit = Math.abs(pctDiff) < 10;
+              const pending = daysSince < 30;
+              return (
+                <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr auto', gap: 6, padding: '7px 0', borderBottom: '1px solid rgba(79,142,247,.08)', fontSize: 12, alignItems: 'center' }}>
+                  <span style={{ color: '#4a6890', fontSize: 11 }}>{a.date}</span>
+                  <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11 }}>目標 {stock.sym}{a.targetPrice.toLocaleString()}</span>
+                  <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11 }}>現價 {stock.sym}{stock.price.toLocaleString()}</span>
+                  <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: pctDiff >= 0 ? '#00d98b' : '#ff4060' }}>{pctDiff >= 0 ? '+' : ''}{pctDiff.toFixed(1)}%</span>
+                  <span style={{ fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 3, background: pending ? 'rgba(255,214,102,.12)' : hit ? 'rgba(0,217,139,.12)' : 'rgba(255,64,96,.12)', color: pending ? '#ffd666' : hit ? '#00d98b' : '#ff4060', border: `1px solid ${pending ? 'rgba(255,214,102,.3)' : hit ? 'rgba(0,217,139,.3)' : 'rgba(255,64,96,.3)'}` }}>
+                    {pending ? '追蹤中' : hit ? '命中' : '未達'}
+                  </span>
+                </div>
+              );
+            })}
+            <div style={{ fontSize: 10, color: '#4a6890', marginTop: 8 }}>命中定義：30天後股價與目標價偏差 &lt; 10%</div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -927,36 +1026,90 @@ function ChatPanel({ stocks, onStockSelect, onLiveData }: {
 // ── PortfolioView ─────────────────────────────────────────────────────────────
 
 function PortfolioView({ stocks, onSelectStock }: { stocks: typeof STOCKS; onSelectStock: (t: string) => void }) {
-  const holdings = PORTFOLIO.map(h => {
-    const s = stocks[h.ticker];
-    const val = (s?.price ?? 0) * h.shares;
-    const cost = h.avgCost * h.shares;
-    const gain = val - cost;
+  const [holdings, setHoldings] = useState<PortfolioHolding[]>(loadPF);
+  const [addForm, setAddForm]   = useState({ show: false, ticker: '', buyPrice: '', lots: '' });
+  const [editIdx, setEditIdx]   = useState<number | null>(null);
+  const [editForm, setEditForm] = useState({ buyPrice: '', lots: '' });
+
+  function updateHoldings(next: PortfolioHolding[]) { setHoldings(next); savePF(next); }
+  function addHolding() {
+    const ticker = addForm.ticker.toUpperCase().trim();
+    const bp = parseFloat(addForm.buyPrice), lots = parseFloat(addForm.lots);
+    if (!ticker || isNaN(bp) || isNaN(lots) || lots <= 0) return;
+    updateHoldings([...holdings, { ticker, buyPrice: bp, lots }]);
+    setAddForm({ show: false, ticker: '', buyPrice: '', lots: '' });
+  }
+  function saveEdit() {
+    if (editIdx === null) return;
+    const bp = parseFloat(editForm.buyPrice), lots = parseFloat(editForm.lots);
+    if (isNaN(bp) || isNaN(lots)) return;
+    updateHoldings(holdings.map((h, i) => i === editIdx ? { ...h, buyPrice: bp, lots } : h));
+    setEditIdx(null);
+  }
+
+  const calced = holdings.map(h => {
+    const s = stocks[h.ticker] as Stock | undefined;
+    const isTW = s?.market === 'TW';
+    const sharesActual = isTW ? h.lots * 1000 : h.lots;
+    const val     = (s?.price ?? 0) * sharesActual;
+    const cost    = h.buyPrice * sharesActual;
+    const gain    = val - cost;
     const gainPct = cost ? (gain / cost) * 100 : 0;
-    return { ...h, ...s, val, cost, gain, gainPct, todayPL: (s?.change ?? 0) * h.shares };
+    const todayPL = (s?.change ?? 0) * sharesActual;
+    return { ...h, s, isTW, sharesActual, val, cost, gain, gainPct, todayPL };
   });
 
-  const totalVal  = holdings.reduce((a, h) => a + h.val, 0);
-  const totalCost = holdings.reduce((a, h) => a + h.cost, 0);
-  const totalGain = totalVal - totalCost;
+  const totalVal     = calced.reduce((a, h) => a + h.val, 0);
+  const totalCost    = calced.reduce((a, h) => a + h.cost, 0);
+  const totalGain    = totalVal - totalCost;
   const totalGainPct = totalCost ? (totalGain / totalCost) * 100 : 0;
-  const todayTotal = holdings.reduce((a, h) => a + h.todayPL, 0);
+  const todayTotal   = calced.reduce((a, h) => a + h.todayPL, 0);
 
-  const fmt = (n: number, d = 0) => n.toLocaleString('en', { minimumFractionDigits: d, maximumFractionDigits: d });
-  const card = { background: '#101e35', border: '1px solid rgba(79,142,247,.15)', borderRadius: 9, padding: 16 };
-  const stLabel = { fontSize: 10, fontWeight: 600, letterSpacing: '.09em', textTransform: 'uppercase' as const, color: '#4a6890', marginBottom: 12 };
+  const fmt      = (n: number, d = 0) => n.toLocaleString('en', { minimumFractionDigits: d, maximumFractionDigits: d });
+  const card     = { background: '#101e35', border: '1px solid rgba(79,142,247,.15)', borderRadius: 9, padding: 16 };
+  const stLabel  = { fontSize: 10, fontWeight: 600, letterSpacing: '.09em', textTransform: 'uppercase' as const, color: '#4a6890', marginBottom: 12 };
+  const inpStyle = { background: '#070b14', border: '1px solid rgba(79,142,247,.2)', borderRadius: 5, padding: '5px 8px', color: '#ccd8f5', fontFamily: "'JetBrains Mono',monospace", fontSize: 12, outline: 'none', width: '100%' };
 
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: 24, scrollbarWidth: 'thin', scrollbarColor: 'rgba(79,142,247,.2) transparent' }}>
-      <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 3 }}>投資組合</div>
-      <div style={{ fontSize: 13, color: '#4a6890', marginBottom: 22 }}>4 檔持股 · Mock 市場資料</div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 22 }}>
+        <div>
+          <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 3 }}>投資組合</div>
+          <div style={{ fontSize: 13, color: '#4a6890' }}>{holdings.length} 檔持股 · 資料存於本機</div>
+        </div>
+        <button onClick={() => setAddForm(f => ({ ...f, show: !f.show }))}
+          style={{ padding: '7px 16px', border: '1px solid rgba(79,142,247,.35)', borderRadius: 7, background: 'rgba(79,142,247,.12)', color: '#4f8ef7', fontSize: 12, cursor: 'pointer', fontFamily: "'Space Grotesk',sans-serif", fontWeight: 600 }}>
+          + 新增持股
+        </button>
+      </div>
+
+      {addForm.show && (
+        <div style={{ ...card, marginBottom: 16, display: 'grid', gridTemplateColumns: '1.5fr 1fr 1fr auto', gap: 10, alignItems: 'end' }}>
+          <div>
+            <div style={{ fontSize: 11, color: '#4a6890', marginBottom: 4 }}>股票代碼</div>
+            <input value={addForm.ticker} onChange={e => setAddForm(f => ({ ...f, ticker: e.target.value }))} placeholder="NVDA / 2330" style={inpStyle} />
+          </div>
+          <div>
+            <div style={{ fontSize: 11, color: '#4a6890', marginBottom: 4 }}>買入價格</div>
+            <input type="number" value={addForm.buyPrice} onChange={e => setAddForm(f => ({ ...f, buyPrice: e.target.value }))} placeholder="648.50" style={inpStyle} />
+          </div>
+          <div>
+            <div style={{ fontSize: 11, color: '#4a6890', marginBottom: 4 }}>台股=張 / 美股=股</div>
+            <input type="number" value={addForm.lots} onChange={e => setAddForm(f => ({ ...f, lots: e.target.value }))} placeholder="3" style={inpStyle} />
+          </div>
+          <div style={{ display: 'flex', gap: 6, paddingBottom: 1 }}>
+            <button onClick={addHolding} style={{ padding: '6px 14px', background: '#4f8ef7', border: 'none', borderRadius: 5, color: '#fff', fontSize: 12, cursor: 'pointer' }}>確認</button>
+            <button onClick={() => setAddForm({ show: false, ticker: '', buyPrice: '', lots: '' })} style={{ padding: '6px 10px', background: 'none', border: '1px solid rgba(79,142,247,.2)', borderRadius: 5, color: '#4a6890', fontSize: 12, cursor: 'pointer' }}>取消</button>
+          </div>
+        </div>
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 12, marginBottom: 22 }}>
         {[
-          { label: '總資產',   value: `$${fmt(totalVal, 2)}`,    sub: '4 檔持股' },
-          { label: '總損益',   value: `+$${fmt(totalGain, 0)}`,  sub: `+${totalGainPct.toFixed(2)}%`, c: '#00d98b' },
-          { label: '今日損益', value: `${todayTotal >= 0 ? '+' : ''}$${fmt(Math.abs(todayTotal), 2)}`, sub: `${todayTotal >= 0 ? '+' : ''}${fmt(Math.abs(todayTotal / totalVal * 100), 2)}%`, c: todayTotal >= 0 ? '#00d98b' : '#ff4060' },
-          { label: '可用資金', value: '$12,500.00', sub: '現金餘額' },
+          { label: '總資產',   value: `$${fmt(totalVal, 2)}`,                                         sub: `${holdings.length} 檔持股` },
+          { label: '總損益',   value: `${totalGain >= 0 ? '+' : ''}$${fmt(Math.abs(totalGain), 0)}`,  sub: `${totalGainPct >= 0 ? '+' : ''}${totalGainPct.toFixed(2)}%`, c: totalGain >= 0 ? '#00d98b' : '#ff4060' },
+          { label: '今日損益', value: `${todayTotal >= 0 ? '+' : ''}$${fmt(Math.abs(todayTotal), 2)}`, sub: `${todayTotal >= 0 ? '+' : ''}${(totalVal ? todayTotal / totalVal * 100 : 0).toFixed(2)}%`, c: todayTotal >= 0 ? '#00d98b' : '#ff4060' },
+          { label: '報酬率',   value: `${totalGainPct >= 0 ? '+' : ''}${totalGainPct.toFixed(2)}%`,   sub: '總持倉報酬', c: totalGainPct >= 0 ? '#00d98b' : '#ff4060' },
         ].map(s => (
           <div key={s.label} style={card}>
             <div style={{ fontSize: 11, color: '#4a6890', fontWeight: 500, marginBottom: 8 }}>{s.label}</div>
@@ -967,57 +1120,82 @@ function PortfolioView({ stocks, onSelectStock }: { stocks: typeof STOCKS; onSel
       </div>
 
       <div style={{ background: '#101e35', border: '1px solid rgba(79,142,247,.15)', borderRadius: 9, overflow: 'hidden', marginBottom: 20 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr 1fr', padding: '11px 16px', borderBottom: '1px solid rgba(79,142,247,.12)', fontSize: 11, fontWeight: 600, letterSpacing: '.05em', textTransform: 'uppercase', color: '#4a6890' }}>
-          <span>股票</span><span>股價</span><span>市值</span><span>持股數</span><span>總損益</span><span>AI 信號</span>
+        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr 1fr auto', padding: '11px 16px', borderBottom: '1px solid rgba(79,142,247,.12)', fontSize: 11, fontWeight: 600, letterSpacing: '.05em', textTransform: 'uppercase' as const, color: '#4a6890' }}>
+          <span>股票</span><span>股價</span><span>市值</span><span>持股</span><span>損益</span><span>AI 信號</span><span></span>
         </div>
-        {holdings.map(h => (
-          <div key={h.ticker} onClick={() => onSelectStock(h.ticker)}
-            style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr 1fr', padding: '13px 16px', borderBottom: '1px solid rgba(79,142,247,.08)', cursor: 'pointer', transition: 'background .15s', alignItems: 'center', fontSize: 13 }}
+        {calced.map((h, i) => editIdx === i ? (
+          <div key={i} style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr 1fr auto', padding: '10px 16px', borderBottom: '1px solid rgba(79,142,247,.08)', gap: 8, alignItems: 'center', background: 'rgba(79,142,247,.05)' }}>
+            <span style={{ fontFamily: "'JetBrains Mono',monospace", fontWeight: 600 }}>{h.ticker}</span>
+            <span></span><span></span>
+            <div><input type="number" value={editForm.buyPrice} onChange={e => setEditForm(f => ({ ...f, buyPrice: e.target.value }))} style={{ ...inpStyle, width: 80 }} placeholder="買入價" /></div>
+            <div><input type="number" value={editForm.lots}     onChange={e => setEditForm(f => ({ ...f, lots: e.target.value }))}     style={{ ...inpStyle, width: 60 }} placeholder={h.isTW ? '張' : '股'} /></div>
+            <span></span>
+            <div style={{ display: 'flex', gap: 4 }}>
+              <button onClick={saveEdit}              style={{ padding: '3px 9px', background: '#4f8ef7', border: 'none', borderRadius: 4, color: '#fff', fontSize: 11, cursor: 'pointer' }}>✓</button>
+              <button onClick={() => setEditIdx(null)} style={{ padding: '3px 9px', background: 'none', border: '1px solid rgba(79,142,247,.2)', borderRadius: 4, color: '#4a6890', fontSize: 11, cursor: 'pointer' }}>✕</button>
+            </div>
+          </div>
+        ) : (
+          <div key={i} style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr 1fr auto', padding: '13px 16px', borderBottom: '1px solid rgba(79,142,247,.08)', transition: 'background .15s', alignItems: 'center', fontSize: 13 }}
             onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,.025)')}
             onMouseLeave={e => (e.currentTarget.style.background = 'none')}
           >
-            <div>
+            <div onClick={() => onSelectStock(h.ticker)} style={{ cursor: 'pointer' }}>
               <div style={{ fontFamily: "'JetBrains Mono',monospace", fontWeight: 600 }}>{h.ticker}</div>
-              <div style={{ fontSize: 11, color: '#4a6890', marginTop: 2 }}>{h.name}</div>
+              <div style={{ fontSize: 11, color: '#4a6890', marginTop: 2 }}>{h.s?.name ?? '—'}</div>
             </div>
-            <div>
-              <div style={{ fontFamily: "'JetBrains Mono',monospace" }}>{h.sym}{h.price?.toLocaleString() ?? '—'}</div>
-              <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: (h.pct ?? 0) >= 0 ? '#00d98b' : '#ff4060', marginTop: 1 }}>{(h.pct ?? 0) >= 0 ? '+' : ''}{(h.pct ?? 0).toFixed(2)}%</div>
+            <div onClick={() => onSelectStock(h.ticker)} style={{ cursor: 'pointer' }}>
+              <div style={{ fontFamily: "'JetBrains Mono',monospace" }}>{h.s?.sym}{h.s?.price?.toLocaleString() ?? '—'}</div>
+              <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: (h.s?.pct ?? 0) >= 0 ? '#00d98b' : '#ff4060', marginTop: 1 }}>{(h.s?.pct ?? 0) >= 0 ? '+' : ''}{(h.s?.pct ?? 0).toFixed(2)}%</div>
             </div>
-            <div style={{ fontFamily: "'JetBrains Mono',monospace" }}>{h.sym}{fmt(h.val)}</div>
-            <div style={{ fontFamily: "'JetBrains Mono',monospace" }}>{h.shares}</div>
-            <div>
+            <div style={{ fontFamily: "'JetBrains Mono',monospace", cursor: 'pointer' }} onClick={() => onSelectStock(h.ticker)}>
+              {h.s?.sym}{fmt(h.val)}
+            </div>
+            <div onClick={() => onSelectStock(h.ticker)} style={{ cursor: 'pointer' }}>
+              <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 12 }}>{h.isTW ? `${h.lots}張` : `${h.lots}股`}</div>
+              <div style={{ fontSize: 11, color: '#4a6890' }}>均價 {h.s?.sym}{h.buyPrice.toFixed(2)}</div>
+            </div>
+            <div onClick={() => onSelectStock(h.ticker)} style={{ cursor: 'pointer' }}>
               <div style={{ fontFamily: "'JetBrains Mono',monospace", color: h.gainPct >= 0 ? '#00d98b' : '#ff4060' }}>{h.gainPct >= 0 ? '+' : ''}{h.gainPct.toFixed(1)}%</div>
-              <div style={{ fontSize: 11, color: '#4a6890', marginTop: 1 }}>{h.gain >= 0 ? '+' : ''}${fmt(Math.abs(h.gain))}</div>
+              <div style={{ fontSize: 11, color: '#4a6890', marginTop: 1 }}>{h.gain >= 0 ? '+' : ''}{h.s?.sym ?? '$'}{fmt(Math.abs(h.gain))}</div>
             </div>
-            <div>
-              {h.verdict && <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", fontWeight: 600, color: vc(h.verdict as Verdict), background: vbg(h.verdict as Verdict), border: `1px solid ${vbd(h.verdict as Verdict)}`, padding: '2px 8px', borderRadius: 3 }}>{h.verdict}</span>}
+            <div onClick={() => onSelectStock(h.ticker)} style={{ cursor: 'pointer' }}>
+              {h.s?.verdict && <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", fontWeight: 600, color: vc(h.s.verdict as Verdict), background: vbg(h.s.verdict as Verdict), border: `1px solid ${vbd(h.s.verdict as Verdict)}`, padding: '2px 8px', borderRadius: 3 }}>{h.s.verdict}</span>}
+            </div>
+            <div style={{ display: 'flex', gap: 4 }}>
+              <button onClick={() => { setEditIdx(i); setEditForm({ buyPrice: String(h.buyPrice), lots: String(h.lots) }); }}
+                style={{ padding: '3px 8px', background: 'none', border: '1px solid rgba(79,142,247,.2)', borderRadius: 4, color: '#4a6890', fontSize: 11, cursor: 'pointer' }}>編輯</button>
+              <button onClick={() => updateHoldings(holdings.filter((_, idx) => idx !== i))}
+                style={{ padding: '3px 8px', background: 'none', border: '1px solid rgba(255,64,96,.2)', borderRadius: 4, color: '#ff4060', fontSize: 11, cursor: 'pointer' }}>刪</button>
             </div>
           </div>
         ))}
+        {holdings.length === 0 && (
+          <div style={{ padding: 32, textAlign: 'center', color: '#4a6890', fontSize: 13 }}>尚無持股，點選「新增持股」開始記錄</div>
+        )}
       </div>
 
-      <div style={card}>
-        <div style={stLabel}>3 月績效走勢</div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 20 }}>
-          {holdings.map(h => (
-            <div key={h.ticker}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-                <span style={{ fontFamily: "'JetBrains Mono',monospace", fontWeight: 700, fontSize: 12 }}>{h.ticker}</span>
-                <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: h.gainPct >= 0 ? '#00d98b' : '#ff4060' }}>{h.gainPct >= 0 ? '+' : ''}{h.gainPct.toFixed(1)}%</span>
-              </div>
-              {h.history && (
-                <div style={{ height: 50 }}>
-                  <ChartSVG history={h.history} W={200} H={50} accent={h.gainPct >= 0 ? '#00d98b' : '#ff4060'} gradId={`pf-${h.ticker}`} isUp={h.gainPct >= 0} showControls={false} initMode="line" initPeriod="m3" />
+      {calced.some(h => h.s?.history) && (
+        <div style={card}>
+          <div style={stLabel}>3 月績效走勢</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 20 }}>
+            {calced.filter(h => h.s?.history).map(h => (
+              <div key={h.ticker}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <span style={{ fontFamily: "'JetBrains Mono',monospace", fontWeight: 700, fontSize: 12 }}>{h.ticker}</span>
+                  <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: h.gainPct >= 0 ? '#00d98b' : '#ff4060' }}>{h.gainPct >= 0 ? '+' : ''}{h.gainPct.toFixed(1)}%</span>
                 </div>
-              )}
-              <div style={{ fontSize: 11, color: '#4a6890', marginTop: 5 }}>
-                持股 {h.shares} {h.market === 'TW' ? '張' : '股'} · 均價 {h.sym}{h.avgCost.toFixed(2)}
+                <div style={{ height: 50 }}>
+                  <ChartSVG history={h.s!.history} W={200} H={50} accent={h.gainPct >= 0 ? '#00d98b' : '#ff4060'} gradId={`pf-${h.ticker}`} isUp={h.gainPct >= 0} showControls={false} initMode="line" initPeriod="m3" />
+                </div>
+                <div style={{ fontSize: 11, color: '#4a6890', marginTop: 5 }}>
+                  {h.isTW ? `${h.lots}張` : `${h.lots}股`} · 均價 {h.s?.sym}{h.buyPrice.toFixed(2)}
+                </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -1397,7 +1575,7 @@ export default function StockDashboard() {
                 <ChatPanel stocks={mergedStocks} onStockSelect={goStock} onLiveData={handleLiveData} />
               </div>
               <div className="sa-analysis" style={{ flex: 1, overflow: 'hidden', display: 'flex' }}>
-                <AnalysisPanel stock={stock} />
+                <AnalysisPanel stock={stock} allStocks={mergedStocks} />
               </div>
             </>
           )}
