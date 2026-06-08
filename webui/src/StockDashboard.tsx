@@ -529,9 +529,38 @@ function TypingDots() {
   );
 }
 
+// ── WlBtn ─────────────────────────────────────────────────────────────────────
+
+function WlBtn({ ticker, watchlist, onAdd, onRemove }: {
+  ticker: string; watchlist: string[];
+  onAdd: (t: string) => void; onRemove: (t: string) => void;
+}) {
+  const inWl = watchlist.includes(ticker);
+  return (
+    <button
+      onClick={e => { e.stopPropagation(); inWl ? onRemove(ticker) : onAdd(ticker); }}
+      title={inWl ? '從自選股移除' : '加入自選股'}
+      style={{
+        background: inWl ? 'rgba(255,214,102,.18)' : 'rgba(79,142,247,.1)',
+        border: `1px solid ${inWl ? 'rgba(255,214,102,.45)' : 'rgba(79,142,247,.25)'}`,
+        borderRadius: 5, color: inWl ? '#ffd666' : '#4a6890',
+        cursor: 'pointer', fontSize: 13, padding: '3px 8px',
+        lineHeight: 1, transition: 'all .15s', flexShrink: 0,
+      }}
+      onMouseEnter={e => { e.currentTarget.style.opacity = '.75'; }}
+      onMouseLeave={e => { e.currentTarget.style.opacity = '1'; }}
+    >
+      {inWl ? '★' : '☆'}
+    </button>
+  );
+}
+
 // ── MiniStockCard ─────────────────────────────────────────────────────────────
 
-function MiniStockCard({ stock, onSelect }: { stock: Stock; onSelect: (t: string) => void }) {
+function MiniStockCard({ stock, watchlist, onSelect, onAdd, onRemove }: {
+  stock: Stock; watchlist: string[];
+  onSelect: (t: string) => void; onAdd: (t: string) => void; onRemove: (t: string) => void;
+}) {
   const isUp = stock.pct >= 0;
   return (
     <div onClick={() => onSelect(stock.ticker)}
@@ -554,7 +583,10 @@ function MiniStockCard({ stock, onSelect }: { stock: Stock; onSelect: (t: string
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '7px 12px', borderTop: '1px solid rgba(79,142,247,.1)', background: 'rgba(255,255,255,.02)' }}>
         <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", fontWeight: 600, color: vc(stock.verdict), background: vbg(stock.verdict), border: `1px solid ${vbd(stock.verdict)}`, padding: '2px 8px', borderRadius: 3, letterSpacing: '.06em' }}>● {stock.verdict}</span>
-        <span style={{ fontSize: 11, color: '#4a6890' }}>信心：{stock.conf}% · <span style={{ color: '#4f8ef7', cursor: 'pointer' }}>查看完整分析 →</span></span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <WlBtn ticker={stock.ticker} watchlist={watchlist} onAdd={onAdd} onRemove={onRemove} />
+          <span style={{ fontSize: 11, color: '#4a6890' }}>信心：{stock.conf}%</span>
+        </div>
       </div>
     </div>
   );
@@ -569,7 +601,10 @@ function fmtMCap(v: number | null) {
   return `$${(v / 1e6).toFixed(0)}M`;
 }
 
-function AnalysisPanel({ stock }: { stock: Stock | null }) {
+function AnalysisPanel({ stock, watchlist, onAdd, onRemove }: {
+  stock: Stock | null; watchlist: string[];
+  onAdd: (t: string) => void; onRemove: (t: string) => void;
+}) {
   const [peers, setPeers]               = useState<PeerData[]>([]);
   const [peersLoading, setPeersLoading] = useState(false);
 
@@ -625,7 +660,8 @@ function AnalysisPanel({ stock }: { stock: Stock | null }) {
         <div style={{ textAlign: 'right' }}>
           <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 26, fontWeight: 700 }}>{stock.sym}{stock.price.toLocaleString()}</div>
           <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 13, color: pctCol, marginTop: 3 }}>{isUp ? '+' : ''}{stock.change.toFixed(2)} ({isUp ? '+' : ''}{stock.pct.toFixed(2)}%)</div>
-          <div style={{ marginTop: 9 }}>
+          <div style={{ marginTop: 9, display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'flex-end' }}>
+            <WlBtn ticker={stock.ticker} watchlist={watchlist} onAdd={onAdd} onRemove={onRemove} />
             <span style={{ fontSize: 12, fontFamily: "'JetBrains Mono',monospace", fontWeight: 600, color: vc(stock.verdict), background: vbg(stock.verdict), border: `1px solid ${vbd(stock.verdict)}`, padding: '4px 10px', borderRadius: 4, letterSpacing: '.06em' }}>● {stock.verdict}</span>
           </div>
         </div>
@@ -837,10 +873,10 @@ function AnalysisPanel({ stock }: { stock: Stock | null }) {
 
 // ── ChatPanel ─────────────────────────────────────────────────────────────────
 
-function ChatPanel({ stocks, onStockSelect, onLiveData }: {
-  stocks: typeof STOCKS;
-  onStockSelect: (t: string) => void;
-  onLiveData: (s: Stock) => void;
+function ChatPanel({ stocks, watchlist, onStockSelect, onLiveData, onAddWl, onRemoveWl }: {
+  stocks: typeof STOCKS; watchlist: string[];
+  onStockSelect: (t: string) => void; onLiveData: (s: Stock) => void;
+  onAddWl: (t: string) => void; onRemoveWl: (t: string) => void;
 }) {
   const [messages, setMessages] = useState<Msg[]>([{
     id: 0, role: 'ai',
@@ -1030,7 +1066,7 @@ function ChatPanel({ stocks, onStockSelect, onLiveData }: {
                         {msg.isStreaming && <span style={{ display: 'inline-block', width: 2, height: 13, background: '#4f8ef7', marginLeft: 2, verticalAlign: 'middle', animation: 'pulse 0.8s infinite' }} />}
                       </div>
                       {!msg.isStreaming && msg.ticker && stocks[msg.ticker] && (
-                        <MiniStockCard stock={stocks[msg.ticker]} onSelect={onStockSelect} />
+                        <MiniStockCard stock={stocks[msg.ticker]} watchlist={watchlist} onSelect={onStockSelect} onAdd={onAddWl} onRemove={onRemoveWl} />
                       )}
                     </>
                 }
@@ -1247,7 +1283,7 @@ function PortfolioView({ stocks, onSelectStock }: { stocks: typeof STOCKS; onSel
 
 // ── WatchlistView ─────────────────────────────────────────────────────────────
 
-function WatchlistView({ stocks, watchlist, onSelectStock, onRemove }: { stocks: typeof STOCKS; watchlist: string[]; onSelectStock: (t: string) => void; onRemove: (t: string) => void }) {
+function WatchlistView({ stocks, watchlist, onSelectStock, onAdd, onRemove }: { stocks: typeof STOCKS; watchlist: string[]; onSelectStock: (t: string) => void; onAdd: (t: string) => void; onRemove: (t: string) => void }) {
   const [mktFilter, setMktFilter] = useState<'all' | 'TW' | 'US'>('all');
   const filtered = watchlist.filter(t => {
     const s = stocks[t];
@@ -1298,11 +1334,7 @@ function WatchlistView({ stocks, watchlist, onSelectStock, onRemove }: { stocks:
                 <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", fontWeight: 600, color: vc(s.verdict), background: vbg(s.verdict), border: `1px solid ${vbd(s.verdict)}`, padding: '2px 9px', borderRadius: 3 }}>{s.verdict}</span>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span style={{ fontSize: 11, color: '#4a6890' }}>信心：{s.conf}%</span>
-                  <button onClick={e => { e.stopPropagation(); onRemove(ticker); }}
-                    style={{ background: 'none', border: '1px solid rgba(255,64,96,.25)', borderRadius: 4, color: '#ff4060', fontSize: 11, padding: '2px 7px', cursor: 'pointer' }}
-                    onMouseEnter={ev => (ev.currentTarget.style.background = 'rgba(255,64,96,.12)')}
-                    onMouseLeave={ev => (ev.currentTarget.style.background = 'none')}
-                  >移除</button>
+                  <WlBtn ticker={ticker} watchlist={watchlist} onAdd={onAdd} onRemove={onRemove} />
                 </div>
               </div>
             </div>
@@ -1662,15 +1694,15 @@ export default function StockDashboard() {
           {view === 'chat' && (
             <>
               <div className="sa-chat" style={{ width: 440, flexShrink: 0 }}>
-                <ChatPanel stocks={mergedStocks} onStockSelect={goStock} onLiveData={handleLiveData} />
+                <ChatPanel stocks={mergedStocks} watchlist={watchlist} onStockSelect={goStock} onLiveData={handleLiveData} onAddWl={addToWatchlist} onRemoveWl={removeFromWatchlist} />
               </div>
               <div className="sa-analysis" style={{ flex: 1, overflow: 'hidden', display: 'flex' }}>
-                <AnalysisPanel stock={stock} />
+                <AnalysisPanel stock={stock} watchlist={watchlist} onAdd={addToWatchlist} onRemove={removeFromWatchlist} />
               </div>
             </>
           )}
           {view === 'portfolio' && <PortfolioView stocks={mergedStocks} onSelectStock={goStock} />}
-          {view === 'watchlist' && <WatchlistView stocks={mergedStocks} watchlist={watchlist} onSelectStock={goStock} onRemove={removeFromWatchlist} />}
+          {view === 'watchlist' && <WatchlistView stocks={mergedStocks} watchlist={watchlist} onSelectStock={goStock} onAdd={addToWatchlist} onRemove={removeFromWatchlist} />}
           {view === 'news'      && <NewsView stock={stock} />}
           {view === 'settings'  && <SettingsView />}
         </main>
