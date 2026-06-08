@@ -5,8 +5,9 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 
-// ── WebSocket URL ─────────────────────────────────────────────────────────────
-const WS_URL = 'wss://stockprice-2ukw.onrender.com';
+// ── WebSocket / API URL ───────────────────────────────────────────────────────
+const WS_URL  = 'wss://stockprice-2ukw.onrender.com';
+const API_URL = WS_URL.replace('wss://', 'https://').replace('ws://', 'http://');
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -40,7 +41,8 @@ interface Msg {
 }
 
 interface PortfolioHolding { ticker: string; buyPrice: number; lots: number }
-interface AiPrediction { ticker: string; targetPrice: number; date: string; priceAtTime: number }
+interface AiPrediction    { ticker: string; targetPrice: number; date: string; priceAtTime: number }
+interface PeerData        { symbol: string; name: string; price: number | null; changePercent: number | null; pe: number | null; eps: number | null; marketCap: number | null }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -282,15 +284,6 @@ const savePF  = (d: PortfolioHolding[]) => localStorage.setItem(PF_KEY, JSON.str
 const loadAcc = (): AiPrediction[]      => { try { return JSON.parse(localStorage.getItem(ACC_KEY) ?? '[]'); } catch { return []; } };
 const saveAcc = (d: AiPrediction[])     => localStorage.setItem(ACC_KEY, JSON.stringify(d));
 
-const SECTOR_PEERS: Record<string, string[]> = {
-  '半導體':       ['2330', 'TSM', 'NVDA'],
-  'IC 設計':      ['2454', 'NVDA'],
-  '電子代工':     ['2317'],
-  '電信':         ['2412'],
-  '金融':         ['2882'],
-  '科技':         ['AAPL', 'MSFT'],
-  '非必需消費品': ['TSLA'],
-};
 
 const AI_RESPONSES: Record<string, string> = {
   '2330': '▌ 市場環境與近期動態\n台積電掌控全球超過 60% 的先進晶圓代工產能，是 AI 晶片供應鏈核心骨幹。輝達與蘋果訂單能見度延伸至 2026 年，外資連續 8 日買超。2 奈米製程良率超出市場預期，法說會細節即將揭露，市場情緒偏多。\n\n▌ 技術面訊號\n週線站上 20 週均線，RSI 62 偏強未過熱，成交量放大配合上攻。短期壓力區 NT$920–945（52W 高點），支撐在 NT$840（月線）。MACD 黃金交叉成立，中期上行動能完整。\n\n▌ 主要風險因子\n• 台灣海峽地緣政治風險（尾端但影響最大）\n• 客戶集中度偏高（蘋果＋輝達合計佔 50% 營收）\n• 美元兌台幣匯率敞口，每升值 1% 稀釋 EPS 約 0.4%\n• 半導體景氣循環下行風險（CoWoS 擴產後供需平衡點）\n\n▌ 投資建議摘要\n**目標價：NT$970**（+10.9%）｜**停損點：NT$820**｜**倉位建議：核心持股，建議 15–20%**',
@@ -569,7 +562,17 @@ function MiniStockCard({ stock, onSelect }: { stock: Stock; onSelect: (t: string
 
 // ── AnalysisPanel ─────────────────────────────────────────────────────────────
 
-function AnalysisPanel({ stock, allStocks }: { stock: Stock | null; allStocks: Record<string, Stock> }) {
+function fmtMCap(v: number | null) {
+  if (!v) return '—';
+  if (v >= 1e12) return `$${(v / 1e12).toFixed(2)}T`;
+  if (v >= 1e9)  return `$${(v / 1e9).toFixed(1)}B`;
+  return `$${(v / 1e6).toFixed(0)}M`;
+}
+
+function AnalysisPanel({ stock }: { stock: Stock | null }) {
+  const [peers, setPeers]               = useState<PeerData[]>([]);
+  const [peersLoading, setPeersLoading] = useState(false);
+
   useEffect(() => {
     if (!stock?.target?.mid) return;
     const today = new Date().toISOString().split('T')[0];
@@ -577,6 +580,16 @@ function AnalysisPanel({ stock, allStocks }: { stock: Stock | null; allStocks: R
     if (!acc.some(a => a.ticker === stock.ticker && a.date === today)) {
       saveAcc([...acc, { ticker: stock.ticker, targetPrice: stock.target.mid, date: today, priceAtTime: stock.price }]);
     }
+  }, [stock?.ticker]);
+
+  useEffect(() => {
+    if (!stock) return;
+    setPeers([]); setPeersLoading(true);
+    fetch(`${API_URL}/api/peers?symbol=${encodeURIComponent(stock.ticker)}&name=${encodeURIComponent(stock.fullName)}&sector=${encodeURIComponent(stock.sector)}`)
+      .then(r => r.json())
+      .then(d => setPeers(d.peers ?? []))
+      .catch(() => setPeers([]))
+      .finally(() => setPeersLoading(false));
   }, [stock?.ticker]);
 
   if (!stock) return (
@@ -718,43 +731,72 @@ function AnalysisPanel({ stock, allStocks }: { stock: Stock | null; allStocks: R
         </div>
       )}
 
-      {/* Peer Comparison */}
-      {(() => {
-        const peers = (SECTOR_PEERS[stock.sector] ?? [])
-          .map(t => allStocks[t]).filter(Boolean).filter(s => s.ticker !== stock.ticker) as Stock[];
-        if (!peers.length) return null;
-        return (
-          <div style={card}>
+      {/* Peer Comparison — AI-powered */}
+      {peersLoading && (
+        <div style={card}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <div style={stLabel}>同業比較</div>
+            <span style={{ fontSize: 11, color: '#4a6890', animation: 'pulse 1.2s infinite' }}>AI 識別競爭對手中…</span>
+          </div>
+          {[0, 1, 2, 3].map(i => (
+            <div key={i} style={{ display: 'grid', gridTemplateColumns: '1.8fr 1fr 1fr 1fr 1fr 1fr 1fr', gap: 8, padding: '9px 0', borderBottom: '1px solid rgba(79,142,247,.06)' }}>
+              {[60, 40, 30, 25, 25, 25, 30].map((w, j) => (
+                <div key={j} style={{ height: 11, width: `${w}%`, borderRadius: 3, background: 'rgba(79,142,247,.09)', animation: `pulse 1.4s ${j * 0.1}s infinite` }} />
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+      {!peersLoading && peers.length > 0 && (
+        <div style={card}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
             <div style={stLabel}>同業比較 · {stock.sector}</div>
+            <span style={{ fontSize: 10, color: '#4a6890' }}>AI 自動識別</span>
+          </div>
+          <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
               <thead>
                 <tr>
-                  {['代碼', '現價', '本益比', 'EPS', '市值', '信號'].map((h, i) => (
-                    <th key={h} style={{ padding: '0 4px 8px', textAlign: i === 0 ? 'left' : 'right', fontSize: 10, fontWeight: 600, letterSpacing: '.06em', textTransform: 'uppercase' as const, color: '#4a6890' }}>{h}</th>
+                  {['代號', '公司名', '股價', '漲跌%', '本益比', 'EPS', '市值'].map((h, i) => (
+                    <th key={h} style={{ padding: '0 6px 8px', textAlign: i <= 1 ? 'left' : 'right', fontSize: 10, fontWeight: 600, letterSpacing: '.06em', textTransform: 'uppercase' as const, color: '#4a6890', whiteSpace: 'nowrap' as const }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {([stock, ...peers] as Stock[]).map(s => (
-                  <tr key={s.ticker} style={{ borderTop: '1px solid rgba(79,142,247,.08)', background: s.ticker === stock.ticker ? 'rgba(79,142,247,.06)' : 'none' }}>
-                    <td style={{ padding: '7px 4px' }}>
-                      <div style={{ fontFamily: "'JetBrains Mono',monospace", fontWeight: 700, fontSize: 11 }}>{s.ticker}</div>
-                      <div style={{ fontSize: 10, color: '#4a6890' }}>{s.name}</div>
-                    </td>
-                    <td style={{ textAlign: 'right', fontFamily: "'JetBrains Mono',monospace", fontSize: 11, padding: '7px 4px' }}>{s.sym}{s.price.toLocaleString()}</td>
-                    <td style={{ textAlign: 'right', fontFamily: "'JetBrains Mono',monospace", fontSize: 11, padding: '7px 4px' }}>{s.pe}</td>
-                    <td style={{ textAlign: 'right', fontFamily: "'JetBrains Mono',monospace", fontSize: 11, padding: '7px 4px' }}>{s.eps}</td>
-                    <td style={{ textAlign: 'right', fontFamily: "'JetBrains Mono',monospace", fontSize: 11, padding: '7px 4px' }}>{s.cap}</td>
-                    <td style={{ textAlign: 'right', padding: '7px 4px' }}>
-                      <span style={{ fontSize: 10, fontWeight: 600, color: vc(s.verdict), background: vbg(s.verdict), border: `1px solid ${vbd(s.verdict)}`, padding: '2px 6px', borderRadius: 3 }}>{s.verdict}</span>
-                    </td>
-                  </tr>
-                ))}
+                {/* Current stock row first */}
+                <tr style={{ borderTop: '1px solid rgba(79,142,247,.08)', background: 'rgba(79,142,247,.07)' }}>
+                  <td style={{ padding: '7px 6px', fontFamily: "'JetBrains Mono',monospace", fontWeight: 700, fontSize: 11 }}>{stock.ticker}</td>
+                  <td style={{ padding: '7px 6px', fontSize: 11, color: '#ccd8f5', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>{stock.name}</td>
+                  <td style={{ padding: '7px 6px', textAlign: 'right', fontFamily: "'JetBrains Mono',monospace", fontSize: 11 }}>{stock.sym}{stock.price.toLocaleString()}</td>
+                  <td style={{ padding: '7px 6px', textAlign: 'right', fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: stock.pct >= 0 ? '#00d98b' : '#ff4060', fontWeight: 600 }}>{stock.pct >= 0 ? '+' : ''}{stock.pct.toFixed(2)}%</td>
+                  <td style={{ padding: '7px 6px', textAlign: 'right', fontFamily: "'JetBrains Mono',monospace", fontSize: 11 }}>{stock.pe}</td>
+                  <td style={{ padding: '7px 6px', textAlign: 'right', fontFamily: "'JetBrains Mono',monospace", fontSize: 11 }}>{stock.eps}</td>
+                  <td style={{ padding: '7px 6px', textAlign: 'right', fontFamily: "'JetBrains Mono',monospace", fontSize: 11 }}>{stock.cap}</td>
+                </tr>
+                {/* Peer rows */}
+                {peers.map(p => {
+                  const isTW  = /\.(TW|TWO)$/i.test(p.symbol);
+                  const sym   = isTW ? 'NT$' : '$';
+                  const up    = (p.changePercent ?? 0) >= 0;
+                  return (
+                    <tr key={p.symbol} style={{ borderTop: '1px solid rgba(79,142,247,.06)' }}>
+                      <td style={{ padding: '7px 6px', fontFamily: "'JetBrains Mono',monospace", fontWeight: 600, fontSize: 11 }}>{p.symbol}</td>
+                      <td style={{ padding: '7px 6px', fontSize: 11, color: '#8fa8c8', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>{p.name}</td>
+                      <td style={{ padding: '7px 6px', textAlign: 'right', fontFamily: "'JetBrains Mono',monospace", fontSize: 11 }}>{p.price != null ? `${sym}${p.price.toLocaleString()}` : '—'}</td>
+                      <td style={{ padding: '7px 6px', textAlign: 'right', fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: up ? '#00d98b' : '#ff4060', fontWeight: 600 }}>
+                        {p.changePercent != null ? `${up ? '+' : ''}${p.changePercent.toFixed(2)}%` : '—'}
+                      </td>
+                      <td style={{ padding: '7px 6px', textAlign: 'right', fontFamily: "'JetBrains Mono',monospace", fontSize: 11 }}>{p.pe != null ? `${p.pe.toFixed(1)}x` : '—'}</td>
+                      <td style={{ padding: '7px 6px', textAlign: 'right', fontFamily: "'JetBrains Mono',monospace", fontSize: 11 }}>{p.eps != null ? p.eps.toFixed(2) : '—'}</td>
+                      <td style={{ padding: '7px 6px', textAlign: 'right', fontFamily: "'JetBrains Mono',monospace", fontSize: 11 }}>{fmtMCap(p.marketCap)}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
-        );
-      })()}
+        </div>
+      )}
 
       {/* AI Accuracy History */}
       {(() => {
@@ -1623,7 +1665,7 @@ export default function StockDashboard() {
                 <ChatPanel stocks={mergedStocks} onStockSelect={goStock} onLiveData={handleLiveData} />
               </div>
               <div className="sa-analysis" style={{ flex: 1, overflow: 'hidden', display: 'flex' }}>
-                <AnalysisPanel stock={stock} allStocks={mergedStocks} />
+                <AnalysisPanel stock={stock} />
               </div>
             </>
           )}

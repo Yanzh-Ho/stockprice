@@ -271,6 +271,59 @@ METRICS|市值:X|PE:X|EPS:X|Beta:X|殖利率:X|均量:X|目標價:${sym}X|操作
   });
 });
 
+// ── REST: /api/peers ──────────────────────────────────────────────────────────
+server.on('request', async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+
+  const url = new URL(req.url, 'http://localhost');
+  if (url.pathname !== '/api/peers') { res.writeHead(404); res.end('{}'); return; }
+
+  const symbol = url.searchParams.get('symbol') || '';
+  const name   = url.searchParams.get('name')   || '';
+  const sector = url.searchParams.get('sector') || '';
+  res.setHeader('Content-Type', 'application/json');
+
+  try {
+    const completion = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      temperature: 0,
+      max_tokens: 80,
+      messages: [{
+        role: 'user',
+        content: `Given stock symbol ${symbol} (${name}, ${sector}), return 3-4 competitor symbols as JSON array only, no explanation. Example: ["2303.TW","2308.TW","INTC","QCOM"]`,
+      }],
+    });
+
+    const raw   = completion.choices[0]?.message?.content || '[]';
+    const match = raw.match(/\[[\s\S]*?\]/);
+    const syms  = match ? JSON.parse(match[0]) : [];
+
+    const peers = (await Promise.all(
+      syms.slice(0, 4).map(async sym => {
+        try {
+          const q = await yahooFinance.quote(sym.trim());
+          return {
+            symbol:        q.symbol,
+            name:          q.longName || q.shortName || sym,
+            price:         q.regularMarketPrice                 ?? null,
+            changePercent: q.regularMarketChangePercent         ?? null,
+            pe:            q.trailingPE                         ?? null,
+            eps:           q.epsTrailingTwelveMonths            ?? null,
+            marketCap:     q.marketCap                          ?? null,
+          };
+        } catch { return null; }
+      })
+    )).filter(Boolean);
+
+    res.end(JSON.stringify({ peers }));
+  } catch (err) {
+    console.error('Peers error:', err.message);
+    res.end(JSON.stringify({ peers: [] }));
+  }
+});
+
 process.on('uncaughtException',  err => console.error('Uncaught:', err.message));
 process.on('unhandledRejection', r   => console.error('Rejected:', r));
 
