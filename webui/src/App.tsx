@@ -436,7 +436,7 @@ export default function App() {
           </div>
         </header>
 
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className="flex-1 overflow-y-auto p-6 pb-0">
           {loadingData ? (
             <div className="h-full flex items-center justify-center text-[11px] tracking-wider text-[#6B7280]">
               <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-[#38BDF8] mr-3"></div>
@@ -578,6 +578,9 @@ export default function App() {
                       ? aiAnalysis.replace(/^METRICS\|[^\n]*\n?/m, '').trimStart()
                       : '正在深入挖掘基本面與目標價，生成報告中...'}
                   </div>
+                  <div className="mt-4 pt-3 border-t border-[#151922] text-[11px] text-[#7a9cc0] leading-relaxed">
+                    ⚠ 以上分析及目標價<span className="font-semibold">僅供參考，不構成投資建議</span>。投資有風險，進場需謹慎。
+                  </div>
                 </div>
               </div>
 
@@ -678,6 +681,12 @@ export default function App() {
               </div>
             </div>
           ) : null}
+        </div>
+
+        {/* Disclaimer footer */}
+        <div className="flex-shrink-0 px-6 py-2 border-t border-[#151922] bg-[#0A0D14] text-[11px] text-[#7a9cc0] leading-relaxed">
+          <span className="font-bold text-[#a0b8d8]">⚠ 免責聲明：</span>
+          本平台提供之股票資訊、AI 分析報告及目標價均<span className="font-semibold text-[#a0b8d8]">僅供參考，不構成任何投資建議或要約</span>。AI 分析結果基於公開資料自動生成，不保證準確性與完整性。投資人應自行評估風險，並在必要時諮詢專業投資顧問。<span className="font-semibold text-[#a0b8d8]">投資有風險，進場需謹慎，過去表現不代表未來結果。</span>
         </div>
       </div>
     </div>
