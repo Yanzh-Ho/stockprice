@@ -1469,8 +1469,9 @@ function SettingsView() {
 export default function StockDashboard() {
   const [view, setView]         = useState<NavId>('chat');
   const [ticker, setTicker]     = useState<string | null>(null);
-  const [searchQ, setSearchQ]   = useState('');
+  const [searchQ, setSearchQ]       = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
+  const [selIdx, setSelIdx]         = useState(-1);
   // Live data received from backend WebSocket — overrides static STOCKS mock
   const [liveStocks, setLiveStocks] = useState<Record<string, Stock>>({});
   const [watchlist, setWatchlist]   = useState<string[]>(loadWL);
@@ -1554,54 +1555,75 @@ export default function StockDashboard() {
         </div>
 
         {/* Search */}
-        <div className="sa-hdr-search" style={{ flex: '0 0 360px', position: 'relative' }}>
-          <div style={{ background: '#101e35', border: `1px solid ${searchOpen ? 'rgba(79,142,247,.45)' : 'rgba(79,142,247,.15)'}`, borderRadius: 7, height: 34, display: 'flex', alignItems: 'center', padding: '0 12px', gap: 8, transition: 'border-color .2s' }}>
-            <span style={{ fontSize: 15, color: '#4a6890', flexShrink: 0 }}>⌕</span>
-            <input
-              value={searchQ}
-              onChange={e => { setSearchQ(e.target.value); setSearchOpen(true); }}
-              onFocus={() => setSearchOpen(true)}
-              onBlur={() => setTimeout(() => setSearchOpen(false), 150)}
-              onKeyDown={e => { if (e.key === 'Escape') { setSearchQ(''); setSearchOpen(false); } }}
-              placeholder="搜尋股票代碼或名稱…"
-              style={{ background: 'none', border: 'none', outline: 'none', color: '#ccd8f5', fontFamily: "'Space Grotesk',sans-serif", fontSize: 13, width: '100%' }}
-            />
-            {searchQ && <span onClick={() => setSearchQ('')} style={{ color: '#4a6890', cursor: 'pointer', flexShrink: 0, fontSize: 16, lineHeight: '1' }}>×</span>}
-          </div>
-          {searchOpen && searchResults.length > 0 && (
-            <div style={{ position: 'absolute', top: 38, left: 0, right: 0, background: '#0c1422', border: '1px solid rgba(79,142,247,.3)', borderRadius: 8, zIndex: 200, overflow: 'hidden', boxShadow: '0 8px 32px rgba(0,0,0,.5)' }}>
-              {searchResults.map(s => {
-                const isUp = s.pct >= 0;
-                return (
-                  <div key={s.ticker} onClick={() => goStock(s.ticker)}
-                    style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', cursor: 'pointer', borderBottom: '1px solid rgba(79,142,247,.1)', transition: 'background .15s' }}
-                    onMouseEnter={e => (e.currentTarget.style.background = 'rgba(79,142,247,.1)')}
-                    onMouseLeave={e => (e.currentTarget.style.background = 'none')}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                      <div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span style={{ fontFamily: "'JetBrains Mono',monospace", fontWeight: 700, fontSize: 13 }}>{s.ticker}</span>
-                          <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 3, background: s.market === 'TW' ? 'rgba(255,214,102,.15)' : 'rgba(79,142,247,.12)', color: s.market === 'TW' ? '#ffd666' : '#4f8ef7', fontWeight: 600 }}>{s.market === 'TW' ? '台股' : '美股'}</span>
+        {(() => {
+          function hl(text: string, q: string) {
+            if (!q) return <span>{text}</span>;
+            const i = text.toLowerCase().indexOf(q.toLowerCase());
+            if (i === -1) return <span>{text}</span>;
+            return <span>{text.slice(0, i)}<mark style={{ background: 'rgba(79,142,247,.35)', color: '#ccd8f5', borderRadius: 2, padding: '0 1px', fontWeight: 700 }}>{text.slice(i, i + q.length)}</mark>{text.slice(i + q.length)}</span>;
+          }
+          function handleKey(e: React.KeyboardEvent) {
+            if (e.key === 'ArrowDown')  { e.preventDefault(); setSelIdx(x => Math.min(x + 1, searchResults.length - 1)); }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); setSelIdx(x => Math.max(x - 1, -1)); }
+            else if (e.key === 'Enter') {
+              if (selIdx >= 0 && searchResults[selIdx]) goStock(searchResults[selIdx].ticker);
+              else if (searchQ.trim()) goStock(searchQ.trim().toUpperCase());
+            } else if (e.key === 'Escape') { setSearchQ(''); setSearchOpen(false); setSelIdx(-1); }
+          }
+          const showDrop = searchOpen && searchQ.trim().length > 0;
+          return (
+            <div className="sa-hdr-search" style={{ flex: '0 0 360px', position: 'relative' }}>
+              <div style={{ background: '#101e35', border: `1px solid ${searchOpen ? 'rgba(79,142,247,.45)' : 'rgba(79,142,247,.15)'}`, borderRadius: 7, height: 34, display: 'flex', alignItems: 'center', padding: '0 12px', gap: 8, transition: 'border-color .2s' }}>
+                <span style={{ fontSize: 15, color: '#4a6890', flexShrink: 0 }}>⌕</span>
+                <input
+                  value={searchQ}
+                  onChange={e => { setSearchQ(e.target.value); setSearchOpen(true); setSelIdx(-1); }}
+                  onFocus={() => setSearchOpen(true)}
+                  onBlur={() => setTimeout(() => { setSearchOpen(false); setSelIdx(-1); }, 160)}
+                  onKeyDown={handleKey}
+                  placeholder="輸入代碼或名稱，例如 2330・NVDA"
+                  style={{ background: 'none', border: 'none', outline: 'none', color: '#ccd8f5', fontFamily: "'Space Grotesk',sans-serif", fontSize: 13, width: '100%' }}
+                />
+                {searchQ && <span onClick={() => { setSearchQ(''); setSelIdx(-1); }} style={{ color: '#4a6890', cursor: 'pointer', flexShrink: 0, fontSize: 16, lineHeight: '1' }}>×</span>}
+              </div>
+              {showDrop && searchResults.length > 0 && (
+                <div style={{ position: 'absolute', top: 38, left: 0, right: 0, background: '#0c1422', border: '1px solid rgba(79,142,247,.3)', borderRadius: 8, zIndex: 200, overflow: 'hidden', boxShadow: '0 8px 32px rgba(0,0,0,.5)' }}>
+                  {searchResults.map((s, i) => {
+                    const isUp = s.pct >= 0;
+                    const active = i === selIdx;
+                    return (
+                      <div key={s.ticker}
+                        onClick={() => goStock(s.ticker)}
+                        onMouseEnter={() => setSelIdx(i)}
+                        style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '9px 14px', cursor: 'pointer', borderBottom: '1px solid rgba(79,142,247,.08)', background: active ? 'rgba(79,142,247,.12)' : 'none', transition: 'background .1s' }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <span style={{ fontFamily: "'JetBrains Mono',monospace", fontWeight: 700, fontSize: 13 }}>{hl(s.ticker, searchQ)}</span>
+                              <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 3, background: s.market === 'TW' ? 'rgba(255,214,102,.15)' : 'rgba(79,142,247,.12)', color: s.market === 'TW' ? '#ffd666' : '#4f8ef7', fontWeight: 600 }}>{s.market === 'TW' ? '台股' : '美股'}</span>
+                            </div>
+                            <div style={{ fontSize: 11, color: '#4a6890', marginTop: 1 }}>{hl(s.name, searchQ)}</div>
+                          </div>
                         </div>
-                        <div style={{ fontSize: 11, color: '#4a6890', marginTop: 1 }}>{s.name}</div>
+                        <div style={{ textAlign: 'right' }}>
+                          <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 13 }}>{s.sym}{s.price.toLocaleString()}</div>
+                          <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: isUp ? '#00d98b' : '#ff4060' }}>{isUp ? '+' : ''}{s.pct.toFixed(2)}%</div>
+                        </div>
                       </div>
-                    </div>
-                    <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 13 }}>{s.sym}{s.price.toLocaleString()}</div>
-                      <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: isUp ? '#00d98b' : '#ff4060' }}>{isUp ? '+' : ''}{s.pct.toFixed(2)}%</div>
-                    </div>
-                  </div>
-                );
-              })}
+                    );
+                  })}
+                  <div style={{ padding: '6px 14px', fontSize: 10, color: '#2a3a52' }}>↑↓ 導航 · Enter 確認</div>
+                </div>
+              )}
+              {showDrop && searchResults.length === 0 && (
+                <div style={{ position: 'absolute', top: 38, left: 0, right: 0, background: '#0c1422', border: '1px solid rgba(79,142,247,.2)', borderRadius: 8, zIndex: 200, padding: '12px 16px', fontSize: 12, color: '#4a6890', boxShadow: '0 8px 32px rgba(0,0,0,.5)' }}>
+                  找不到「{searchQ}」· 按 Enter 直接查詢
+                </div>
+              )}
             </div>
-          )}
-          {searchOpen && searchQ.trim().length > 0 && searchResults.length === 0 && (
-            <div style={{ position: 'absolute', top: 38, left: 0, right: 0, background: '#0c1422', border: '1px solid rgba(79,142,247,.2)', borderRadius: 8, zIndex: 200, padding: '14px 16px', fontSize: 12, color: '#4a6890', boxShadow: '0 8px 32px rgba(0,0,0,.5)' }}>
-              找不到符合「{searchQ}」的股票
-            </div>
-          )}
-        </div>
+          );
+        })()}
 
         {/* Market tickers */}
         <div className="sa-hdr-mkts" style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
