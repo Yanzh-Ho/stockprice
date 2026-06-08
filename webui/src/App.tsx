@@ -24,6 +24,22 @@ interface StockData {
   history: Array<{ date: string; open: number; high: number; low: number; close: number; volume?: number; }>;
 }
 
+// ── Price Alerts ──
+interface PriceAlert {
+  id: string;
+  symbol: string;
+  name: string;
+  targetPrice: number;
+  direction: 'above' | 'below';
+  triggeredAt?: string;
+}
+
+const ALERTS_KEY = 'finpulse_price_alerts';
+const loadAlerts = (): PriceAlert[] => {
+  try { return JSON.parse(localStorage.getItem(ALERTS_KEY) || '[]'); } catch { return []; }
+};
+const saveAlerts = (a: PriceAlert[]) => localStorage.setItem(ALERTS_KEY, JSON.stringify(a));
+
 // ── Indicator calculations ──
 type Bar = StockData['history'][number];
 
@@ -223,6 +239,10 @@ export default function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [loadingData, setLoadingData] = useState(false);
   const [range, setRange] = useState('1Y');
+  const [alerts, setAlerts] = useState<PriceAlert[]>(loadAlerts);
+  const [showAlertPanel, setShowAlertPanel] = useState(false);
+  const [newAlertPrice, setNewAlertPrice] = useState('');
+  const [newAlertDir, setNewAlertDir] = useState<'above' | 'below'>('above');
   const ws        = useRef<WebSocket | null>(null);
   const autoQueue = useRef<string[]>([]);
   const isBgFetch = useRef(false);
@@ -259,6 +279,29 @@ export default function App() {
                 setLoadingData(false);
                 setSelectedStock({ ...fresh, name: localizedName });
               }
+              // 價格警報：每次報價更新都檢查（含背景抓取）
+              const { symbol: sym, price: px } = fresh;
+              const isTWsym = /\.(TW|TWO)$/i.test(sym);
+              const curr = isTWsym ? 'NT$' : '$';
+              setAlerts(prev => {
+                let changed = false;
+                const next = prev.map(a => {
+                  if (a.symbol !== sym || a.triggeredAt) return a;
+                  const hit = a.direction === 'above' ? px >= a.targetPrice : px <= a.targetPrice;
+                  if (!hit) return a;
+                  changed = true;
+                  if (Notification.permission === 'granted') {
+                    try {
+                      new Notification(`🔔 ${sym} 價格警報`, {
+                        body: `${a.name} 已${a.direction === 'above' ? '突破' : '跌破'} ${curr}${a.targetPrice}　現價：${curr}${px}`,
+                      });
+                    } catch { /* Safari may throw */ }
+                  }
+                  return { ...a, triggeredAt: new Date().toLocaleString('zh-TW') };
+                });
+                if (changed) { saveAlerts(next); return next; }
+                return prev;
+              });
             } else if (!isBgFetch.current) {
               setLoadingData(false);
               alert(message.error || '無法取得資料');
@@ -328,6 +371,30 @@ export default function App() {
     }));
   };
 
+  const addAlert = async () => {
+    const price = parseFloat(newAlertPrice);
+    if (!selectedStock || isNaN(price) || price <= 0) return;
+    if ('Notification' in window && Notification.permission === 'default') {
+      await Notification.requestPermission();
+    }
+    const a: PriceAlert = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      symbol: selectedStock.symbol,
+      name: selectedStock.name,
+      targetPrice: price,
+      direction: newAlertDir,
+    };
+    setAlerts(prev => { const next = [...prev, a]; saveAlerts(next); return next; });
+    setNewAlertPrice('');
+  };
+
+  const deleteAlert = (id: string) => {
+    setAlerts(prev => { const next = prev.filter(a => a.id !== id); saveAlerts(next); return next; });
+  };
+
+  const stockAlerts    = selectedStock ? alerts.filter(a => a.symbol === selectedStock.symbol) : [];
+  const activeAlertCnt = stockAlerts.filter(a => !a.triggeredAt).length;
+
   return (
     <div className="flex h-screen w-screen bg-[#07090E] text-[#D1D5DB] font-sans overflow-hidden antialiased">
       <div className="w-64 border-r border-[#151922] bg-[#0A0D14] flex flex-col justify-between flex-shrink-0">
@@ -385,22 +452,112 @@ export default function App() {
                       <div className="text-3xl font-mono text-white mt-2">{selectedStock.price}</div>
                       <div className={`text-xs font-mono mt-1 ${selectedStock.changePercent >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>{selectedStock.changePercent >= 0 ? '▲' : '▼'} {Math.abs(selectedStock.changePercent)}%</div>
                     </div>
-                    {aiMetrics['操作'] && (() => {
-                      const v = aiMetrics['操作'];
-                      const isBuy  = v === '買進';
-                      const isSell = v === '賣出';
-                      const col = isBuy ? 'text-emerald-400 border-emerald-400/30 bg-emerald-400/10'
-                                : isSell ? 'text-rose-400 border-rose-400/30 bg-rose-400/10'
-                                : 'text-amber-400 border-amber-400/30 bg-amber-400/10';
-                      const dot = isBuy ? 'bg-emerald-400' : isSell ? 'bg-rose-400' : 'bg-amber-400';
-                      return (
-                        <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded border font-mono text-sm font-semibold tracking-wider ${col}`}>
-                          <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
-                          {v}
-                        </div>
-                      );
-                    })()}
+                    <div className="flex items-center gap-2">
+                      {/* 警報按鈕 */}
+                      <button
+                        onClick={() => setShowAlertPanel(v => !v)}
+                        title="設定價格警報"
+                        className={`relative flex items-center gap-1.5 px-2.5 py-1.5 rounded border text-[10px] font-mono transition-colors ${
+                          showAlertPanel
+                            ? 'bg-[#38BDF8]/15 border-[#38BDF8]/30 text-[#38BDF8]'
+                            : 'border-[#1F2431] text-[#4B5563] hover:text-[#9CA3AF]'
+                        }`}
+                      >
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+                          <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+                        </svg>
+                        警報
+                        {activeAlertCnt > 0 && (
+                          <span className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-rose-500 rounded-full text-[8px] text-white flex items-center justify-center font-bold">
+                            {activeAlertCnt}
+                          </span>
+                        )}
+                      </button>
+                      {/* 操作建議徽章 */}
+                      {aiMetrics['操作'] && (() => {
+                        const v = aiMetrics['操作'];
+                        const isBuy  = v === '買進';
+                        const isSell = v === '賣出';
+                        const col = isBuy ? 'text-emerald-400 border-emerald-400/30 bg-emerald-400/10'
+                                  : isSell ? 'text-rose-400 border-rose-400/30 bg-rose-400/10'
+                                  : 'text-amber-400 border-amber-400/30 bg-amber-400/10';
+                        const dot = isBuy ? 'bg-emerald-400' : isSell ? 'bg-rose-400' : 'bg-amber-400';
+                        return (
+                          <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded border font-mono text-sm font-semibold tracking-wider ${col}`}>
+                            <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
+                            {v}
+                          </div>
+                        );
+                      })()}
+                    </div>
                   </div>
+
+                  {/* 價格警報抽屜 */}
+                  {showAlertPanel && (
+                    <div className="mt-4 border border-[#1F2431] rounded-lg overflow-hidden">
+                      <div className="px-4 py-2 bg-[#0E121A] border-b border-[#151922] flex items-center justify-between">
+                        <span className="text-[10px] font-mono tracking-widest text-[#4B5563]">PRICE ALERTS — {selectedStock.symbol}</span>
+                        <span className="text-[10px] text-[#6B7280] font-mono">現價 {/\.(TW|TWO)$/i.test(selectedStock.symbol) ? 'NT$' : '$'}{selectedStock.price}</span>
+                      </div>
+                      <div className="p-4 bg-[#0A0D14] space-y-3">
+                        {/* 新增警報表單 */}
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => setNewAlertDir('above')}
+                            className={`text-[10px] px-2.5 py-1 rounded border transition-colors whitespace-nowrap ${newAlertDir === 'above' ? 'border-emerald-500/50 text-emerald-400 bg-emerald-400/10' : 'border-[#1F2431] text-[#4B5563] hover:text-[#9CA3AF]'}`}>
+                            ▲ 高於
+                          </button>
+                          <button
+                            onClick={() => setNewAlertDir('below')}
+                            className={`text-[10px] px-2.5 py-1 rounded border transition-colors whitespace-nowrap ${newAlertDir === 'below' ? 'border-rose-500/50 text-rose-400 bg-rose-400/10' : 'border-[#1F2431] text-[#4B5563] hover:text-[#9CA3AF]'}`}>
+                            ▼ 低於
+                          </button>
+                          <input
+                            type="number"
+                            value={newAlertPrice}
+                            onChange={e => setNewAlertPrice(e.target.value)}
+                            onKeyDown={e => e.key === 'Enter' && addAlert()}
+                            placeholder={String(selectedStock.price)}
+                            className="flex-1 min-w-0 bg-[#07090E] border border-[#1F2431] rounded px-3 py-1 text-xs text-white focus:outline-none focus:border-[#38BDF8]/50 font-mono"
+                          />
+                          <button
+                            onClick={addAlert}
+                            className="text-[10px] px-3 py-1 bg-[#38BDF8]/10 border border-[#38BDF8]/20 text-[#38BDF8] rounded hover:bg-[#38BDF8]/20 transition-colors font-mono whitespace-nowrap">
+                            設定
+                          </button>
+                        </div>
+                        {/* 警報列表 */}
+                        {stockAlerts.length > 0 ? (
+                          <div className="space-y-1.5 border-t border-[#151922] pt-3">
+                            {stockAlerts.map(a => (
+                              <div key={a.id} className={`flex items-center justify-between font-mono text-[10px] ${a.triggeredAt ? 'opacity-40' : ''}`}>
+                                <div className="flex items-center gap-2">
+                                  <span className={a.direction === 'above' ? 'text-emerald-400' : 'text-rose-400'}>
+                                    {a.direction === 'above' ? '▲' : '▼'}
+                                  </span>
+                                  <span className="text-white">{a.targetPrice}</span>
+                                  {a.triggeredAt && (
+                                    <span className="text-amber-400 text-[9px]">已觸發 {a.triggeredAt}</span>
+                                  )}
+                                </div>
+                                <button
+                                  onClick={() => deleteAlert(a.id)}
+                                  className="text-[#4B5563] hover:text-rose-400 transition-colors ml-3 text-[12px] leading-none">
+                                  ✕
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-[10px] text-[#4B5563] text-center py-1 font-mono">尚未設定警報</p>
+                        )}
+                        {Notification.permission === 'denied' && (
+                          <p className="text-[9px] text-rose-400/70 text-center">⚠ 瀏覽器通知已被封鎖，請在設定中允許</p>
+                        )}
+                      </div>
+                    </div>
+                  )}
 
                   <StockChart
                     history={selectedStock.history}
