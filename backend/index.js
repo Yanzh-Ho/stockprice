@@ -18,9 +18,18 @@ const YF_HEADERS = {
   'Origin': 'https://finance.yahoo.com',
 };
 
-// v8 chart API — 即時報價 + 1年歷史
-async function fetchChart(symbol) {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1y`;
+// 時間區間 → Yahoo Finance API 參數映射
+const RANGE_MAP = {
+  '1W': { range: '5d',  interval: '1d'  },
+  '1M': { range: '1mo', interval: '1d'  },
+  '3M': { range: '3mo', interval: '1d'  },
+  '1Y': { range: '1y',  interval: '1d'  },
+  '5Y': { range: '5y',  interval: '1wk' },
+};
+
+// v8 chart API — 即時報價 + 歷史K線（含成交量）
+async function fetchChart(symbol, range = '1y', interval = '1d') {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=${interval}&range=${range}`;
   const res = await fetch(url, { headers: YF_HEADERS, signal: AbortSignal.timeout(12000) });
   if (!res.ok) throw new Error(`v8 HTTP ${res.status}`);
   const json = await res.json();
@@ -40,11 +49,12 @@ async function fetchChart(symbol) {
   }
 
   const history = ts.map((t, i) => ({
-    date:  new Date(t * 1000).toISOString().split('T')[0],
-    open:  (q.open  || [])[i] ?? null,
-    high:  (q.high  || [])[i] ?? null,
-    low:   (q.low   || [])[i] ?? null,
-    close: (q.close || [])[i] ?? null,
+    date:   new Date(t * 1000).toISOString().split('T')[0],
+    open:   (q.open   || [])[i] ?? null,
+    high:   (q.high   || [])[i] ?? null,
+    low:    (q.low    || [])[i] ?? null,
+    close:  (q.close  || [])[i] ?? null,
+    volume: (q.volume || [])[i] ?? 0,
   })).filter(h => h.close != null && h.open != null);
 
   return {
@@ -67,6 +77,7 @@ async function fetchFundamentals(symbol) {
     if (!q) return {};
 
     const isTW = /\.(TW|TWO)$/i.test(symbol);
+    const sym  = isTW ? 'NT$' : '$';
     // TW 成交量單位：張數（Yahoo 回傳股數，除以 1000 得張）→ 再除以 10000 得萬張
     const avgVolStr = q.averageDailyVolume3Month
       ? (isTW
@@ -74,15 +85,34 @@ async function fetchFundamentals(symbol) {
           : `${(q.averageDailyVolume3Month / 1e6).toFixed(1)} M`)
       : '---';
 
+    // 除息日 / 財報日
+    const exDivDate = q.exDividendDate
+      ? (q.exDividendDate instanceof Date ? q.exDividendDate : new Date(q.exDividendDate * 1000))
+          .toISOString().split('T')[0]
+      : null;
+    const earningsRaw = q.earningsTimestampStart ?? q.earningsTimestamp ?? null;
+    const earningsDate = earningsRaw != null
+      ? (earningsRaw instanceof Date ? earningsRaw : new Date(earningsRaw * 1000))
+          .toISOString().split('T')[0]
+      : null;
+
+    // 分析師平均目標價
+    const analystTargetPrice = q.targetMeanPrice != null
+      ? `${sym}${isTW ? q.targetMeanPrice.toFixed(0) : q.targetMeanPrice.toFixed(2)}`
+      : null;
+
     return {
-      marketCap:     q.marketCap                   ? `${(q.marketCap / 1e12).toFixed(2)} 兆`               : '---',
-      peRatio:       q.trailingPE                  ? `${q.trailingPE.toFixed(1)}x`                          : '---',
-      eps:           q.epsTrailingTwelveMonths      ? `${q.epsTrailingTwelveMonths.toFixed(2)} 元`           : '---',
-      beta:          q.beta                         ? q.beta.toFixed(2)                                     : '---',
-      dividendYield: q.trailingAnnualDividendYield  ? `${(q.trailingAnnualDividendYield * 100).toFixed(2)}%` : '---',
-      avgVolume:     avgVolStr,
-      _high52w:      q.fiftyTwoWeekHigh ?? null,
-      _low52w:       q.fiftyTwoWeekLow  ?? null,
+      marketCap:          q.marketCap                   ? `${(q.marketCap / 1e12).toFixed(2)} 兆`               : '---',
+      peRatio:            q.trailingPE                  ? `${q.trailingPE.toFixed(1)}x`                          : '---',
+      eps:                q.epsTrailingTwelveMonths      ? `${q.epsTrailingTwelveMonths.toFixed(2)} 元`           : '---',
+      beta:               q.beta                         ? q.beta.toFixed(2)                                     : '---',
+      dividendYield:      q.trailingAnnualDividendYield  ? `${(q.trailingAnnualDividendYield * 100).toFixed(2)}%` : '---',
+      avgVolume:          avgVolStr,
+      _high52w:           q.fiftyTwoWeekHigh ?? null,
+      _low52w:            q.fiftyTwoWeekLow  ?? null,
+      analystTargetPrice,
+      exDivDate,
+      earningsDate,
     };
   } catch(e) {
     console.log('Fundamentals (yahoo-finance2) failed:', e.message);
@@ -90,16 +120,32 @@ async function fetchFundamentals(symbol) {
   }
 }
 
+// 分析師買進/持有/賣出人數
+async function fetchRecommendationTrend(symbol) {
+  try {
+    const summary = await yahooFinance.quoteSummary(symbol, { modules: ['recommendationTrend'] });
+    const trend = summary?.recommendationTrend?.trend?.[0];
+    if (!trend) return {};
+    const buy  = (trend.strongBuy  || 0) + (trend.buy   || 0);
+    const hold =  trend.hold  || 0;
+    const sell = (trend.sell  || 0) + (trend.strongSell || 0);
+    return { analystBuy: buy, analystHold: hold, analystSell: sell, analystTotal: buy + hold + sell };
+  } catch(e) {
+    console.log('RecommendationTrend failed:', e.message);
+    return {};
+  }
+}
+
 
 // 台股純數字 → 先試 .TWO 再試 .TW；美股直打
-async function resolveSymbol(input) {
+async function resolveSymbol(input, range = '1y', interval = '1d') {
   const clean = input.trim().toUpperCase();
   if (/^\d+$/.test(clean)) {
-    try { return await fetchChart(`${clean}.TWO`); } catch(e) {}
-    try { return await fetchChart(`${clean}.TW`);  } catch(e) {}
+    try { return await fetchChart(`${clean}.TWO`, range, interval); } catch(e) {}
+    try { return await fetchChart(`${clean}.TW`,  range, interval); } catch(e) {}
     throw new Error(`查無台股代號 ${clean}`);
   }
-  return await fetchChart(clean);
+  return await fetchChart(clean, range, interval);
 }
 
 wss.on('connection', (ws) => {
@@ -110,15 +156,33 @@ wss.on('connection', (ws) => {
       const payload = JSON.parse(Buffer.isBuffer(message) ? message.toString() : message);
       if (payload.action !== 'requestAnalysis') return;
 
-      const input     = payload.symbol   || '2330';
-      const priceOnly = !!payload.priceOnly;
-      console.log(`Fetching: ${input}${priceOnly ? ' (priceOnly)' : ''}`);
+      const input      = payload.symbol    || '2330';
+      const priceOnly  = !!payload.priceOnly;
+      const rangeOnly  = !!payload.rangeOnly;
+      const rangeKey   = payload.range || '1Y';
+      const { range: apiRange, interval: apiInterval } = RANGE_MAP[rangeKey] || RANGE_MAP['1Y'];
+      console.log(`Fetching: ${input}${priceOnly ? ' (priceOnly)' : rangeOnly ? ` (rangeOnly:${rangeKey})` : ''}`);
+
+      // rangeOnly：只更新K線歷史，不重跑基本面/AI
+      if (rangeOnly) {
+        try {
+          const base = await resolveSymbol(input, apiRange, apiInterval);
+          ws.send(JSON.stringify({ type: 'chartData', data: { symbol: base.symbol, history: base.history } }));
+        } catch(err) {
+          ws.send(JSON.stringify({ type: 'chartData', data: null, error: err.message }));
+        }
+        ws.send(JSON.stringify({ type: 'done' }));
+        return;
+      }
 
       let stockData;
       try {
-        // chart 用直接 fetch，基本面用 yahoo-finance2（有 cookie/crumb 管理）
-        const base = await resolveSymbol(input);
-        const quote = await fetchFundamentals(base.symbol).catch(() => ({}));
+        // chart 用直接 fetch，基本面 + 分析師評級並行抓
+        const base = await resolveSymbol(input, apiRange, apiInterval);
+        const [quote, analyst] = await Promise.all([
+          fetchFundamentals(base.symbol).catch(() => ({})),
+          priceOnly ? Promise.resolve({}) : fetchRecommendationTrend(base.symbol).catch(() => ({})),
+        ]);
 
         const { _high52w, _low52w, ...cleanQuote } = quote;
         const isTW = /\.(TW|TWO)$/i.test(base.symbol);
@@ -130,6 +194,7 @@ wss.on('connection', (ws) => {
         stockData = {
           ...base,
           ...cleanQuote,
+          ...analyst,
           high52w: hi52 ? `${sym}${hi52}` : '---',
           low52w:  lo52 ? `${sym}${lo52}` : '---',
           isTW,

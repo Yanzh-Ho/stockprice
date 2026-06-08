@@ -1,4 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
+import {
+  createChart, ColorType, CrosshairMode, LineStyle,
+  CandlestickSeries, LineSeries, HistogramSeries,
+  createSeriesMarkers,
+} from 'lightweight-charts';
+import type { IChartApi } from 'lightweight-charts';
 
 const WS_URL = 'wss://stockprice-2ukw.onrender.com';
 
@@ -11,48 +17,192 @@ interface StockData {
   marketCap: string; peRatio: string; eps: string; beta: string;
   volume: string; avgVolume: string; high52w: string; low52w: string;
   dividendYield: string; targetPrice: string;
-  history: Array<{ date: string; open: number; high: number; low: number; close: number; }>;
+  analystTargetPrice?: string | null;
+  analystBuy?: number; analystHold?: number; analystSell?: number; analystTotal?: number;
+  earningsDate?: string | null;
+  exDivDate?: string | null;
+  history: Array<{ date: string; open: number; high: number; low: number; close: number; volume?: number; }>;
 }
 
-// ── Candlestick chart — defined at module level to avoid React remount issues ──
-function CandlestickChart({ history, isTW }: { history: StockData['history']; isTW: boolean }) {
-  const data = history.slice(-80);
-  if (!data.length) return (
-    <div className="text-[10px] text-[#1E2530] text-center py-10 font-mono tracking-widest">NO DATA</div>
-  );
+// ── Indicator calculations ──
+type Bar = StockData['history'][number];
 
-  // 台股：漲紅跌綠；美股：漲綠跌紅
-  const UP_COL   = isTW ? '#F87171' : '#10B981';
-  const DOWN_COL = isTW ? '#10B981' : '#F87171';
+function calcSMA(history: Bar[], period: number) {
+  const result: { time: string; value: number }[] = [];
+  for (let i = period - 1; i < history.length; i++) {
+    let sum = 0;
+    for (let j = i - period + 1; j <= i; j++) sum += history[j].close;
+    result.push({ time: history[i].date, value: sum / period });
+  }
+  return result;
+}
 
-  const W = 600, H = 150;
-  const min = Math.min(...data.map(d => d.low))  * 0.998;
-  const max = Math.max(...data.map(d => d.high)) * 1.002;
-  const rng = max - min || 1;
-  const cw  = (W / data.length) * 0.55;
-  const xOf = (i: number) => (i + 0.5) * (W / data.length);
-  const yOf = (v: number) => H - ((v - min) / rng) * H;
+function calcEMA(values: number[], period: number): number[] {
+  const k = 2 / (period + 1);
+  const ema = [values[0]];
+  for (let i = 1; i < values.length; i++) ema.push(values[i] * k + ema[i - 1] * (1 - k));
+  return ema;
+}
+
+function calcRSI(history: Bar[], period = 14) {
+  const closes = history.map(d => d.close);
+  const out: { time: string; value: number }[] = [];
+  if (closes.length < period + 1) return out;
+  let avgG = 0, avgL = 0;
+  for (let i = 1; i <= period; i++) {
+    const d = closes[i] - closes[i - 1];
+    if (d > 0) avgG += d; else avgL -= d;
+  }
+  avgG /= period; avgL /= period;
+  out.push({ time: history[period].date, value: avgL === 0 ? 100 : 100 - 100 / (1 + avgG / avgL) });
+  for (let i = period + 1; i < history.length; i++) {
+    const d = closes[i] - closes[i - 1];
+    avgG = (avgG * (period - 1) + Math.max(d, 0)) / period;
+    avgL = (avgL * (period - 1) + Math.max(-d, 0)) / period;
+    out.push({ time: history[i].date, value: avgL === 0 ? 100 : 100 - 100 / (1 + avgG / avgL) });
+  }
+  return out;
+}
+
+function calcMACD(history: Bar[]) {
+  const none = { macdData: [] as { time: string; value: number }[], signalData: [] as { time: string; value: number }[], histData: [] as { time: string; value: number; color: string }[] };
+  if (history.length < 35) return none;
+  const closes = history.map(d => d.close);
+  const ema12 = calcEMA(closes, 12);
+  const ema26 = calcEMA(closes, 26);
+  const macdLine = ema12.map((v, i) => v - ema26[i]);
+  const sig = calcEMA(macdLine, 9);
+  const START = 33;
+  const t = (i: number) => history[i].date;
+  return {
+    macdData:   Array.from({ length: history.length - START }, (_, j) => ({ time: t(START + j), value: macdLine[START + j] })),
+    signalData: Array.from({ length: history.length - START }, (_, j) => ({ time: t(START + j), value: sig[START + j] })),
+    histData:   Array.from({ length: history.length - START }, (_, j) => {
+      const v = macdLine[START + j] - sig[START + j];
+      return { time: t(START + j), value: v, color: v >= 0 ? '#10B981' : '#EF4444' };
+    }),
+  };
+}
+
+const RANGES = ['1W', '1M', '3M', '1Y', '5Y'] as const;
+
+// ── StockChart — lightweight-charts with MA / Volume / RSI / MACD panes ──
+function StockChart({ history, isTW, events = [], range, onRangeChange }: {
+  history: StockData['history'];
+  isTW: boolean;
+  events?: Array<{ date: string; type: 'exdiv' | 'earnings' }>;
+  range: string;
+  onRangeChange: (r: string) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || history.length < 2) return;
+
+    chartRef.current?.remove();
+
+    const UP   = isTW ? '#F87171' : '#10B981';
+    const DOWN = isTW ? '#10B981' : '#F87171';
+
+    const chart = createChart(el, {
+      autoSize: true,
+      height: 460,
+      layout:    { background: { type: ColorType.Solid, color: '#0A0D14' }, textColor: '#6B7280' },
+      grid:      { vertLines: { color: '#151922' }, horzLines: { color: '#151922' } },
+      crosshair: { mode: CrosshairMode.Normal },
+      rightPriceScale: { borderColor: '#1F2431' },
+      timeScale: { borderColor: '#1F2431', timeVisible: true },
+    });
+    chartRef.current = chart;
+
+    // ── Pane 0: Candlestick + MAs ──
+    const candle = chart.addSeries(CandlestickSeries, {
+      upColor: UP, downColor: DOWN, borderUpColor: UP, borderDownColor: DOWN, wickUpColor: UP, wickDownColor: DOWN,
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    candle.setData(history.map(d => ({ time: d.date, open: d.open, high: d.high, low: d.low, close: d.close })) as any);
+
+    const marks = events
+      .filter(ev => history.some(h => h.date === ev.date))
+      .map(ev => ({
+        time: ev.date,
+        position: 'aboveBar' as const,
+        color: ev.type === 'exdiv' ? '#38BDF8' : '#F59E0B',
+        shape: 'arrowDown' as const,
+        text: ev.type === 'exdiv' ? '息' : '財',
+      }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if (marks.length) createSeriesMarkers(candle as any, marks as any);
+
+    const addMA = (period: number, color: string) => {
+      const s = chart.addSeries(LineSeries, { color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      s.setData(calcSMA(history, period) as any);
+    };
+    addMA(5,  '#D1D5DB');
+    addMA(20, '#FBBF24');
+    addMA(60, '#F97316');
+
+    // ── Pane 1: Volume ──
+    const vol = chart.addSeries(HistogramSeries, { priceFormat: { type: 'volume' } }, 1);
+    chart.priceScale('right', 1).applyOptions({ scaleMargins: { top: 0.1, bottom: 0 } });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    vol.setData(history.map(d => ({ time: d.date, value: d.volume ?? 0, color: d.close >= d.open ? UP : DOWN })) as any);
+
+    // ── Pane 2: RSI(14) ──
+    const rsiS = chart.addSeries(LineSeries, { color: '#A78BFA', lineWidth: 2, priceLineVisible: false, lastValueVisible: true }, 2);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    rsiS.setData(calcRSI(history) as any);
+    rsiS.createPriceLine({ price: 70, color: '#EF4444', lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: '70' });
+    rsiS.createPriceLine({ price: 30, color: '#22C55E', lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: '30' });
+
+    // ── Pane 3: MACD ──
+    const { macdData, signalData, histData } = calcMACD(history);
+    const macdS = chart.addSeries(LineSeries, { color: '#60A5FA', lineWidth: 2, priceLineVisible: false, lastValueVisible: false }, 3);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    macdS.setData(macdData as any);
+    const sigS = chart.addSeries(LineSeries, { color: '#FB923C', lineWidth: 2, priceLineVisible: false, lastValueVisible: false }, 3);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    sigS.setData(signalData as any);
+    const histS = chart.addSeries(HistogramSeries, { priceLineVisible: false, lastValueVisible: false }, 3);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    histS.setData(histData as any);
+
+    // Set pane heights
+    const panes = chart.panes();
+    panes[0]?.setHeight(220);
+    panes[1]?.setHeight(60);
+    panes[2]?.setHeight(80);
+    panes[3]?.setHeight(80);
+
+    chart.timeScale().fitContent();
+
+    return () => { chartRef.current?.remove(); chartRef.current = null; };
+  }, [history, isTW, events]);
 
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} width="100%" height="100%"
-      preserveAspectRatio="none" style={{ display: 'block' }}>
-      {data.map((d, i) => {
-        const up   = d.close >= d.open;
-        const col  = up ? UP_COL : DOWN_COL;
-        const bTop = yOf(Math.max(d.open, d.close));
-        const bBot = yOf(Math.min(d.open, d.close));
-        const bH   = Math.max(bBot - bTop, 1);
-        const x    = xOf(i);
-        return (
-          <g key={i}>
-            <line x1={x} y1={yOf(d.high)} x2={x} y2={yOf(d.low)}
-              stroke={col} strokeWidth="0.8" opacity="0.6" />
-            <rect x={x - cw / 2} y={bTop} width={cw} height={bH}
-              fill={col} opacity="0.85" />
-          </g>
-        );
-      })}
-    </svg>
+    <div>
+      <div className="flex items-center gap-1 mt-6 mb-2 border-t border-[#151922] pt-4">
+        <div className="flex items-center gap-3 mr-auto text-[9px] font-mono text-[#6B7280] select-none">
+          <span className="flex items-center gap-1.5"><span className="inline-block w-4 h-px bg-[#D1D5DB]" />MA5</span>
+          <span className="flex items-center gap-1.5"><span className="inline-block w-4 h-px bg-[#FBBF24]" />MA20</span>
+          <span className="flex items-center gap-1.5"><span className="inline-block w-4 h-px bg-[#F97316]" />MA60</span>
+        </div>
+        {RANGES.map(r => (
+          <button key={r} onClick={() => onRangeChange(r)}
+            className={`px-2 py-0.5 text-[10px] font-mono rounded transition-colors ${
+              range === r
+                ? 'bg-[#38BDF8]/15 text-[#38BDF8] border border-[#38BDF8]/30'
+                : 'text-[#4B5563] hover:text-[#9CA3AF] border border-transparent'
+            }`}>
+            {r}
+          </button>
+        ))}
+      </div>
+      <div ref={containerRef} />
+    </div>
   );
 }
 
@@ -72,11 +222,11 @@ export default function App() {
   const [aiMetrics, setAiMetrics] = useState<Record<string, string>>({});
   const [isConnected, setIsConnected] = useState(false);
   const [loadingData, setLoadingData] = useState(false);
-  const ws          = useRef<WebSocket | null>(null);
-  const autoQueue   = useRef<string[]>([]);   // 背景待抓的自選股列表
-  const isBgFetch   = useRef(false);           // 目前是否在做背景靜默抓取
+  const [range, setRange] = useState('1Y');
+  const ws        = useRef<WebSocket | null>(null);
+  const autoQueue = useRef<string[]>([]);
+  const isBgFetch = useRef(false);
 
-  // 送出背景 priceOnly 請求（不更新主面板、不顯示 loading）
   function sendBgFetch(socket: WebSocket, sym: string) {
     socket.send(JSON.stringify({ action: 'requestAnalysis', symbol: sym, priceOnly: true }));
   }
@@ -86,11 +236,9 @@ export default function App() {
       const socket = new WebSocket(WS_URL);
       socket.onopen = () => {
         setIsConnected(true);
-        // 第一支股票：完整分析 + 主面板展示
         isBgFetch.current = false;
-        socket.send(JSON.stringify({ action: 'requestAnalysis', symbol: '2330.TW' }));
+        socket.send(JSON.stringify({ action: 'requestAnalysis', symbol: '2330.TW', range: '1Y' }));
         setLoadingData(true);
-        // 其餘自選股排隊背景抓價（等第一支 done 後依序送出）
         autoQueue.current = ['2454.TW', '2317.TW', '2412.TW', 'AAPL', 'NVDA'];
       };
 
@@ -102,15 +250,11 @@ export default function App() {
             if (message.data) {
               const fresh = message.data;
               const localizedName = taiwanStockNames[fresh.symbol] || fresh.name || fresh.symbol;
-
-              // 更新 watchlist 報價（任何情況都做）
               setWatchlist(prev => prev.map(item =>
                 item.symbol.split('.')[0].toUpperCase() === fresh.symbol.split('.')[0].toUpperCase()
                   ? { ...item, price: fresh.price, changePercent: fresh.changePercent, name: localizedName }
                   : item
               ));
-
-              // 只有非背景抓取才更新主面板
               if (!isBgFetch.current) {
                 setLoadingData(false);
                 setSelectedStock({ ...fresh, name: localizedName });
@@ -118,6 +262,13 @@ export default function App() {
             } else if (!isBgFetch.current) {
               setLoadingData(false);
               alert(message.error || '無法取得資料');
+            }
+          }
+
+          // rangeOnly 回傳的 chartData：只更新 history
+          if (message.type === 'chartData') {
+            if (message.data?.history) {
+              setSelectedStock(prev => prev ? { ...prev, history: message.data.history } : prev);
             }
           }
 
@@ -137,14 +288,13 @@ export default function App() {
             });
           }
 
-          // 每次 done 都觸發下一支自選股的背景抓取
           if (message.type === 'done') {
             const next = autoQueue.current.shift();
             if (next && socket.readyState === WebSocket.OPEN) {
               isBgFetch.current = true;
               sendBgFetch(socket, next);
             } else if (!next) {
-              isBgFetch.current = false; // 全部抓完
+              isBgFetch.current = false;
             }
           }
         } catch (err) {}
@@ -159,13 +309,23 @@ export default function App() {
 
   const handleQueryStock = (symbolStr: string) => {
     if (!symbolStr || !ws.current || ws.current.readyState !== WebSocket.OPEN) return;
-    // 使用者手動查詢：清空背景佇列，切換為完整分析模式
     autoQueue.current = [];
     isBgFetch.current = false;
     setAiAnalysis('');
     setAiMetrics({});
     setLoadingData(true);
-    ws.current.send(JSON.stringify({ action: 'requestAnalysis', symbol: symbolStr.trim().toUpperCase() }));
+    ws.current.send(JSON.stringify({ action: 'requestAnalysis', symbol: symbolStr.trim().toUpperCase(), range }));
+  };
+
+  const handleRangeChange = (newRange: string) => {
+    setRange(newRange);
+    if (!selectedStock || !ws.current || ws.current.readyState !== WebSocket.OPEN) return;
+    ws.current.send(JSON.stringify({
+      action: 'requestAnalysis',
+      symbol: selectedStock.symbol,
+      range: newRange,
+      rangeOnly: true,
+    }));
   };
 
   return (
@@ -211,10 +371,13 @@ export default function App() {
 
         <div className="flex-1 overflow-y-auto p-6">
           {loadingData ? (
-             <div className="h-full flex items-center justify-center text-[11px] tracking-wider text-[#6B7280]"><div className="animate-spin rounded-full h-5 w-5 border-b-2 border-[#38BDF8] mr-3"></div>FETCHING MARKET DATA...</div>
+            <div className="h-full flex items-center justify-center text-[11px] tracking-wider text-[#6B7280]">
+              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-[#38BDF8] mr-3"></div>
+              FETCHING MARKET DATA...
+            </div>
           ) : selectedStock ? (
-            <div className="flex gap-6 h-full">
-              <div className="flex-1 flex flex-col space-y-6">
+            <div className="flex gap-6">
+              <div className="flex-1 flex flex-col space-y-6 min-w-0">
                 <div className="bg-[#0A0D14] border border-[#151922] rounded-lg p-6 relative">
                   <div className="flex items-start justify-between">
                     <div>
@@ -239,15 +402,19 @@ export default function App() {
                     })()}
                   </div>
 
-                  <div className="h-48 mt-6 border-t border-[#151922] pt-4 overflow-hidden">
-                    <CandlestickChart
-                      history={selectedStock.history}
-                      isTW={/\.(TW|TWO)$/i.test(selectedStock.symbol)}
-                    />
-                  </div>
+                  <StockChart
+                    history={selectedStock.history}
+                    isTW={/\.(TW|TWO)$/i.test(selectedStock.symbol)}
+                    range={range}
+                    onRangeChange={handleRangeChange}
+                    events={[
+                      ...(selectedStock.exDivDate    ? [{ date: selectedStock.exDivDate,    type: 'exdiv'    as const }] : []),
+                      ...(selectedStock.earningsDate ? [{ date: selectedStock.earningsDate, type: 'earnings' as const }] : []),
+                    ]}
+                  />
                 </div>
 
-                <div className="flex-1 bg-[#0A0D14] border border-[#151922] rounded-lg p-6">
+                <div className="bg-[#0A0D14] border border-[#151922] rounded-lg p-6">
                   <h3 className="text-xs font-serif font-bold text-[#38BDF8] mb-4">AI ANALYSIS • LLAMA-3.1-8B</h3>
                   <div className="text-xs font-serif text-[#9CA3AF] leading-relaxed whitespace-pre-wrap">
                     {aiAnalysis
@@ -257,7 +424,56 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="w-72 bg-[#0A0D14] border border-[#151922] rounded-lg p-6 flex flex-col">
+              <div className="w-72 bg-[#0A0D14] border border-[#151922] rounded-lg p-6 flex flex-col overflow-y-auto flex-shrink-0">
+
+                {/* 重大事件日期 */}
+                {(selectedStock.earningsDate || selectedStock.exDivDate) && (
+                  <div className="mb-4 space-y-1.5 border-b border-[#151922] pb-4">
+                    <div className="text-[10px] font-mono tracking-widest text-[#4B5563] mb-2">UPCOMING EVENTS</div>
+                    {selectedStock.earningsDate && (
+                      <div className="flex items-center gap-2 text-[10px] font-mono">
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400 flex-shrink-0" />
+                        <span className="text-[#6B7280]">財報日</span>
+                        <span className="text-amber-400 ml-auto">{selectedStock.earningsDate}</span>
+                      </div>
+                    )}
+                    {selectedStock.exDivDate && (
+                      <div className="flex items-center gap-2 text-[10px] font-mono">
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#38BDF8] flex-shrink-0" />
+                        <span className="text-[#6B7280]">除息日</span>
+                        <span className="text-[#38BDF8] ml-auto">{selectedStock.exDivDate}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* 分析師評級 */}
+                {(selectedStock.analystTotal ?? 0) > 0 && (() => {
+                  const total = selectedStock.analystTotal!;
+                  const buy   = selectedStock.analystBuy  ?? 0;
+                  const hold  = selectedStock.analystHold ?? 0;
+                  const sell  = selectedStock.analystSell ?? 0;
+                  const buyPct  = Math.round(buy  / total * 100);
+                  const holdPct = Math.round(hold / total * 100);
+                  const sellPct = 100 - buyPct - holdPct;
+                  return (
+                    <div className="mb-4 border-b border-[#151922] pb-4">
+                      <div className="text-[10px] font-mono tracking-widest text-[#4B5563] mb-3">ANALYST CONSENSUS</div>
+                      <div className="flex h-1.5 rounded overflow-hidden mb-2">
+                        <div style={{ width: `${buyPct}%` }}  className="bg-emerald-500" />
+                        <div style={{ width: `${holdPct}%` }} className="bg-amber-400" />
+                        <div style={{ width: `${sellPct}%` }} className="bg-rose-500" />
+                      </div>
+                      <div className="flex justify-between text-[9px] font-mono mt-1.5">
+                        <span className="text-emerald-400">買進 {buy}<span className="text-[#4B5563] ml-0.5">({buyPct}%)</span></span>
+                        <span className="text-amber-400">持有 {hold}</span>
+                        <span className="text-rose-400">賣出 {sell}<span className="text-[#4B5563] ml-0.5">({sellPct}%)</span></span>
+                      </div>
+                      <div className="text-[9px] text-[#4B5563] text-center mt-1 font-mono">共 {total} 位分析師</div>
+                    </div>
+                  );
+                })()}
+
                 <h3 className="text-[10px] font-mono tracking-widest text-[#4B5563] mb-4">KEY METRICS</h3>
                 <div className="space-y-3 font-mono text-xs">
                   {([
@@ -283,14 +499,23 @@ export default function App() {
                       </div>
                     );
                   })}
-                  <div className="flex justify-between pb-2 pt-3 bg-[#111622] px-2 -mx-2 rounded">
-                    <span className="text-[#38BDF8] font-serif font-bold flex items-center gap-1.5">
-                      AI 估算目標價
-                      <span className="text-[9px] font-mono text-[#38BDF8]/50 border border-[#38BDF8]/20 px-1 rounded">AI</span>
-                    </span>
-                    <span className="text-[#38BDF8] font-bold font-mono">
-                      {aiMetrics['目標價'] || (aiAnalysis ? '解析中...' : '分析中...')}
-                    </span>
+
+                  <div className="pt-3 space-y-2">
+                    {selectedStock.analystTargetPrice && (
+                      <div className="flex justify-between items-baseline">
+                        <span className="text-[#6B7280] font-serif text-[10px]">分析師均價</span>
+                        <span className="text-amber-400 font-mono text-xs">{selectedStock.analystTargetPrice}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between pb-2 bg-[#111622] px-2 -mx-2 rounded">
+                      <span className="text-[#38BDF8] font-serif font-bold flex items-center gap-1.5">
+                        AI 估算目標價
+                        <span className="text-[9px] font-mono text-[#38BDF8]/50 border border-[#38BDF8]/20 px-1 rounded">AI</span>
+                      </span>
+                      <span className="text-[#38BDF8] font-bold font-mono">
+                        {aiMetrics['目標價'] || (aiAnalysis ? '解析中...' : '分析中...')}
+                      </span>
+                    </div>
                   </div>
                 </div>
               </div>
