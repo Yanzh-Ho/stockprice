@@ -265,7 +265,10 @@ const STOCKS: Record<string, Stock> = Object.fromEntries(
   })
 );
 
-const WATCHLIST = ['2330', '2454', '2317', '2412', 'TSM', 'NVDA', 'AAPL', 'TSLA'];
+const WL_KEY     = 'fp_wl';
+const WL_DEFAULT = ['2330', '2454', '2317', '2412', 'AAPL', 'NVDA'];
+const loadWL = (): string[] => { try { const s = localStorage.getItem(WL_KEY); return s ? JSON.parse(s) : WL_DEFAULT; } catch { return WL_DEFAULT; } };
+const saveWL = (d: string[]) => localStorage.setItem(WL_KEY, JSON.stringify(d));
 
 const PF_KEY = 'fp_pf', ACC_KEY = 'fp_acc';
 const PF_DEFAULT: PortfolioHolding[] = [
@@ -1202,11 +1205,11 @@ function PortfolioView({ stocks, onSelectStock }: { stocks: typeof STOCKS; onSel
 
 // ── WatchlistView ─────────────────────────────────────────────────────────────
 
-function WatchlistView({ stocks, onSelectStock }: { stocks: typeof STOCKS; onSelectStock: (t: string) => void }) {
+function WatchlistView({ stocks, watchlist, onSelectStock, onRemove }: { stocks: typeof STOCKS; watchlist: string[]; onSelectStock: (t: string) => void; onRemove: (t: string) => void }) {
   const [mktFilter, setMktFilter] = useState<'all' | 'TW' | 'US'>('all');
-  const filtered = WATCHLIST.filter(t => {
+  const filtered = watchlist.filter(t => {
     const s = stocks[t];
-    if (!s) return false;
+    if (!s) return mktFilter === 'all';
     if (mktFilter === 'TW') return s.market === 'TW';
     if (mktFilter === 'US') return s.market === 'US';
     return true;
@@ -1215,7 +1218,7 @@ function WatchlistView({ stocks, onSelectStock }: { stocks: typeof STOCKS; onSel
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: 24, scrollbarWidth: 'thin', scrollbarColor: 'rgba(79,142,247,.2) transparent' }}>
       <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 3 }}>自選股</div>
-      <div style={{ fontSize: 13, color: '#4a6890', marginBottom: 16 }}>{WATCHLIST.length} 檔股票 · AI 監控中</div>
+      <div style={{ fontSize: 13, color: '#4a6890', marginBottom: 16 }}>{watchlist.length} 檔股票 · AI 監控中</div>
       <div style={{ display: 'flex', gap: 6, marginBottom: 20 }}>
         {([['all', '全部市場'], ['TW', '🇹🇼 台股'], ['US', '🇺🇸 美股']] as const).map(([k, l]) => (
           <button key={k} onClick={() => setMktFilter(k)}
@@ -1251,7 +1254,14 @@ function WatchlistView({ stocks, onSelectStock }: { stocks: typeof STOCKS; onSel
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", fontWeight: 600, color: vc(s.verdict), background: vbg(s.verdict), border: `1px solid ${vbd(s.verdict)}`, padding: '2px 9px', borderRadius: 3 }}>{s.verdict}</span>
-                <span style={{ fontSize: 11, color: '#4a6890' }}>AI 信心：{s.conf}% · {s.sentimentLabel}</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: 11, color: '#4a6890' }}>信心：{s.conf}%</span>
+                  <button onClick={e => { e.stopPropagation(); onRemove(ticker); }}
+                    style={{ background: 'none', border: '1px solid rgba(255,64,96,.25)', borderRadius: 4, color: '#ff4060', fontSize: 11, padding: '2px 7px', cursor: 'pointer' }}
+                    onMouseEnter={ev => (ev.currentTarget.style.background = 'rgba(255,64,96,.12)')}
+                    onMouseLeave={ev => (ev.currentTarget.style.background = 'none')}
+                  >移除</button>
+                </div>
               </div>
             </div>
           );
@@ -1389,11 +1399,25 @@ export default function StockDashboard() {
   const [searchOpen, setSearchOpen] = useState(false);
   // Live data received from backend WebSocket — overrides static STOCKS mock
   const [liveStocks, setLiveStocks] = useState<Record<string, Stock>>({});
+  const [watchlist, setWatchlist]   = useState<string[]>(loadWL);
+  const [wlInput, setWlInput]       = useState('');
 
   const mergedStocks = { ...STOCKS, ...liveStocks };
 
   function handleLiveData(s: Stock) {
     setLiveStocks(prev => ({ ...prev, [s.ticker]: s }));
+  }
+
+  function addToWatchlist(raw: string) {
+    const t = raw.toUpperCase().trim();
+    if (!t || watchlist.includes(t)) { setWlInput(''); return; }
+    const next = [...watchlist, t];
+    setWatchlist(next); saveWL(next); setWlInput('');
+  }
+
+  function removeFromWatchlist(t: string) {
+    const next = watchlist.filter(x => x !== t);
+    setWatchlist(next); saveWL(next);
   }
 
   // Inject fonts + global CSS
@@ -1536,31 +1560,55 @@ export default function StockDashboard() {
             ))}
           </nav>
 
-          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: '.1em', textTransform: 'uppercase', color: '#1e3050', padding: '14px 16px 7px' }}>Watchlist</div>
+          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: '.1em', textTransform: 'uppercase', color: '#1e3050', padding: '14px 16px 6px' }}>Watchlist</div>
+
+          {/* Add stock */}
+          <div style={{ display: 'flex', gap: 5, padding: '0 10px 8px' }}>
+            <input
+              value={wlInput}
+              onChange={e => setWlInput(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && addToWatchlist(wlInput)}
+              placeholder="代碼..."
+              style={{ flex: 1, background: '#0c1422', border: '1px solid rgba(79,142,247,.2)', borderRadius: 5, padding: '4px 7px', color: '#ccd8f5', fontSize: 11, outline: 'none', fontFamily: "'JetBrains Mono',monospace", minWidth: 0 }}
+              onFocus={e => (e.target.style.borderColor = 'rgba(79,142,247,.5)')}
+              onBlur={e => (e.target.style.borderColor = 'rgba(79,142,247,.2)')}
+            />
+            <button onClick={() => addToWatchlist(wlInput)}
+              style={{ padding: '4px 9px', background: 'rgba(79,142,247,.15)', border: '1px solid rgba(79,142,247,.3)', borderRadius: 5, color: '#4f8ef7', fontSize: 14, cursor: 'pointer', flexShrink: 0, fontWeight: 700, lineHeight: 1 }}
+              onMouseEnter={e => (e.currentTarget.style.background = 'rgba(79,142,247,.28)')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'rgba(79,142,247,.15)')}
+            >+</button>
+          </div>
 
           <div style={{ flex: 1, overflowY: 'auto', scrollbarWidth: 'thin', scrollbarColor: 'rgba(79,142,247,.2) transparent' }}>
-            {WATCHLIST.map(t => {
+            {watchlist.map(t => {
               const s = mergedStocks[t];
-              if (!s) return null;
-              const isUp   = s.pct >= 0;
+              const isUp   = (s?.pct ?? 0) >= 0;
               const active = ticker === t;
               return (
-                <div key={t} onClick={() => goStock(t)}
-                  style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 14px 7px 16px', background: active ? 'rgba(79,142,247,.07)' : 'none', borderLeft: `2px solid ${active ? '#4f8ef7' : 'transparent'}`, cursor: 'pointer', transition: 'background .15s' }}
+                <div key={t}
+                  style={{ display: 'flex', alignItems: 'center', padding: '6px 6px 6px 16px', background: active ? 'rgba(79,142,247,.07)' : 'none', borderLeft: `2px solid ${active ? '#4f8ef7' : 'transparent'}`, transition: 'background .15s' }}
                   onMouseEnter={e => { if (!active) e.currentTarget.style.background = 'rgba(255,255,255,.025)'; }}
                   onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'none'; }}
                 >
-                  <div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                      <div style={{ fontFamily: "'JetBrains Mono',monospace", fontWeight: 600, fontSize: 12 }}>{t}</div>
-                      <span style={{ fontSize: 8, padding: '1px 4px', borderRadius: 2, background: s.market === 'TW' ? 'rgba(255,214,102,.15)' : 'rgba(79,142,247,.1)', color: s.market === 'TW' ? '#ffd666' : '#4f8ef7', fontWeight: 600 }}>{s.market === 'TW' ? '台' : 'US'}</span>
+                  <div onClick={() => goStock(t)} style={{ flex: 1, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', minWidth: 0 }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                        <div style={{ fontFamily: "'JetBrains Mono',monospace", fontWeight: 600, fontSize: 12 }}>{t}</div>
+                        {s && <span style={{ fontSize: 8, padding: '1px 4px', borderRadius: 2, background: s.market === 'TW' ? 'rgba(255,214,102,.15)' : 'rgba(79,142,247,.1)', color: s.market === 'TW' ? '#ffd666' : '#4f8ef7', fontWeight: 600 }}>{s.market === 'TW' ? '台' : 'US'}</span>}
+                      </div>
+                      <div style={{ fontSize: 10, color: '#4a6890', marginTop: 1 }}>{s?.name ?? '—'}</div>
                     </div>
-                    <div style={{ fontSize: 10, color: '#4a6890', marginTop: 1 }}>{s.name}</div>
+                    <div style={{ textAlign: 'right', marginRight: 4, flexShrink: 0 }}>
+                      <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 12 }}>{s ? `${s.sym}${s.price.toLocaleString()}` : '—'}</div>
+                      {s && <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: isUp ? '#00d98b' : '#ff4060' }}>{isUp ? '+' : ''}{s.pct.toFixed(2)}%</div>}
+                    </div>
                   </div>
-                  <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 12 }}>{s.sym}{s.price.toLocaleString()}</div>
-                    <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: isUp ? '#00d98b' : '#ff4060' }}>{isUp ? '+' : ''}{s.pct.toFixed(2)}%</div>
-                  </div>
+                  <button onClick={() => removeFromWatchlist(t)}
+                    style={{ background: 'none', border: 'none', color: '#2a3a52', cursor: 'pointer', fontSize: 15, padding: '0 4px', flexShrink: 0, lineHeight: 1, transition: 'color .15s' }}
+                    onMouseEnter={e => (e.currentTarget.style.color = '#ff4060')}
+                    onMouseLeave={e => (e.currentTarget.style.color = '#2a3a52')}
+                  >×</button>
                 </div>
               );
             })}
@@ -1580,7 +1628,7 @@ export default function StockDashboard() {
             </>
           )}
           {view === 'portfolio' && <PortfolioView stocks={mergedStocks} onSelectStock={goStock} />}
-          {view === 'watchlist' && <WatchlistView stocks={mergedStocks} onSelectStock={goStock} />}
+          {view === 'watchlist' && <WatchlistView stocks={mergedStocks} watchlist={watchlist} onSelectStock={goStock} onRemove={removeFromWatchlist} />}
           {view === 'news'      && <NewsView stock={stock} />}
           {view === 'settings'  && <SettingsView />}
         </main>
