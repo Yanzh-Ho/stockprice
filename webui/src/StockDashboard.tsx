@@ -700,8 +700,8 @@ function AnalysisPanel({ stock, watchlist, onAdd, onRemove }: {
           共識目標 <span style={{ color: '#00d98b', fontFamily: "'JetBrains Mono',monospace", fontWeight: 600 }}>{stock.sym}{stock.target.mid.toLocaleString()}</span>
           <span style={{ color: '#00d98b', marginLeft: 6 }}>{Number(upside) > 0 ? '+' : ''}{upside}% 上漲空間</span>
         </div>
-        <div style={{ marginTop: 10, paddingTop: 9, borderTop: '1px solid rgba(79,142,247,.1)', fontSize: 10, color: '#4a6890', lineHeight: 1.6 }}>
-          以上分析及目標價僅供參考，不構成投資建議。投資有風險，進場需謹慎。
+        <div style={{ marginTop: 10, paddingTop: 9, borderTop: '1px solid rgba(79,142,247,.15)', fontSize: 11, color: '#7a9cc0', lineHeight: 1.6 }}>
+          ⚠ 以上分析及目標價<span style={{ fontWeight: 600 }}>僅供參考，不構成投資建議</span>。投資有風險，進場需謹慎。
         </div>
       </div>
 
@@ -1734,9 +1734,9 @@ export default function StockDashboard() {
       </div>
 
       {/* Disclaimer */}
-      <div style={{ padding: '7px 20px', borderTop: '1px solid rgba(79,142,247,.15)', background: '#0a1020', fontSize: 10, color: '#4a6890', lineHeight: 1.6, flexShrink: 0 }}>
-        <span style={{ color: '#6a88b0', fontWeight: 600 }}>免責聲明：</span>
-        本平台提供之股票資訊、AI 分析報告及目標價均<span style={{ fontWeight: 600 }}>僅供參考，不構成任何投資建議或要約</span>。AI 分析結果基於公開資料自動生成，不保證準確性與完整性。投資人應自行評估風險，並在必要時諮詢專業投資顧問。<span style={{ fontWeight: 600 }}>投資有風險，進場需謹慎，過去表現不代表未來結果。</span>
+      <div style={{ padding: '8px 20px', borderTop: '1px solid rgba(79,142,247,.25)', background: '#0d1528', fontSize: 11, color: '#7a9cc0', lineHeight: 1.6, flexShrink: 0 }}>
+        <span style={{ color: '#a0b8d8', fontWeight: 700 }}>⚠ 免責聲明：</span>
+        本平台提供之股票資訊、AI 分析報告及目標價均<span style={{ fontWeight: 600, color: '#a0b8d8' }}>僅供參考，不構成任何投資建議或要約</span>。AI 分析結果基於公開資料自動生成，不保證準確性與完整性。投資人應自行評估風險，並在必要時諮詢專業投資顧問。<span style={{ fontWeight: 600, color: '#a0b8d8' }}>投資有風險，進場需謹慎，過去表現不代表未來結果。</span>
       </div>
 
       {/* Mobile nav */}
